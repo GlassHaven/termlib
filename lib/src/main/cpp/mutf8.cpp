@@ -186,3 +186,75 @@ char* mutf8_to_utf8(const char* mutf8_in, size_t len, size_t* out_len) {
 
     return utf8_out;
 }
+
+/** Append one code point as UTF-16, folding anything unencodable to U+FFFD. */
+static void append_code_point(std::u16string& out, uint32_t cp) {
+    // Lone surrogates are not encodable and would produce an invalid jstring.
+    if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
+        cp = 0xFFFD;
+    }
+    if (cp < 0x10000) {
+        out.push_back(static_cast<char16_t>(cp));
+    } else {
+        cp -= 0x10000;
+        out.push_back(static_cast<char16_t>(0xD800 + (cp >> 10)));
+        out.push_back(static_cast<char16_t>(0xDC00 + (cp & 0x3FF)));
+    }
+}
+
+std::u16string utf8_to_utf16_lossy(const char* in, size_t len) {
+    std::u16string out;
+    if (!in) return out;
+    out.reserve(len);
+
+    const uint8_t* p = reinterpret_cast<const uint8_t*>(in);
+    const uint8_t* end = p + len;
+
+    while (p < end) {
+        const uint8_t c = *p;
+        uint32_t cp;
+        int continuations;
+        uint32_t smallest;   // guards against overlong encodings
+
+        if (c < 0x80) {
+            cp = c;          continuations = 0; smallest = 0;
+        } else if ((c & 0xE0) == 0xC0) {
+            cp = c & 0x1Fu;  continuations = 1; smallest = 0x80;
+        } else if ((c & 0xF0) == 0xE0) {
+            cp = c & 0x0Fu;  continuations = 2; smallest = 0x800;
+        } else if ((c & 0xF8) == 0xF0) {
+            cp = c & 0x07u;  continuations = 3; smallest = 0x10000;
+        } else {
+            // A stray continuation byte, or 0xF8..0xFF which UTF-8 never uses.
+            out.push_back(0xFFFD);
+            p++;
+            continue;
+        }
+
+        // Truncated at the end of the buffer — this is the check whose absence
+        // makes utf8_to_mutf8 read past its input.
+        if (static_cast<size_t>(end - p) < static_cast<size_t>(continuations) + 1) {
+            out.push_back(0xFFFD);
+            p++;
+            continue;
+        }
+
+        bool wellFormed = true;
+        for (int i = 1; i <= continuations; i++) {
+            if ((p[i] & 0xC0) != 0x80) { wellFormed = false; break; }
+            cp = (cp << 6) | (p[i] & 0x3Fu);
+        }
+        // Advance one byte on a bad sequence so the next lead byte gets its own
+        // chance to parse, rather than swallowing the rest of the sequence.
+        if (!wellFormed || cp < smallest) {
+            out.push_back(0xFFFD);
+            p++;
+            continue;
+        }
+
+        append_code_point(out, cp);
+        p += continuations + 1;
+    }
+
+    return out;
+}

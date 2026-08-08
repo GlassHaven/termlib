@@ -1080,7 +1080,19 @@ int Terminal::invokeOscSequence(int command, const std::string& payload, int cur
         return 0;
     }
 
-    ScopedLocalRef<jstring> payloadStr(env, env->NewStringUTF(payload.c_str()));
+    // Decoded to UTF-16 rather than handed to NewStringUTF, which aborts the
+    // whole process on bytes that are not valid modified UTF-8. An OSC payload
+    // is whatever the remote program emitted — a window title from a non-UTF-8
+    // Windows console is not obliged to be valid UTF-8, and a terminal that
+    // dies on one is worse than a terminal that shows U+FFFD.
+    //
+    // Sized from the string rather than c_str(), so a payload containing an
+    // embedded NUL is passed through whole instead of being silently truncated.
+    const std::u16string payloadUtf16 = utf8_to_utf16_lossy(payload.data(), payload.size());
+    ScopedLocalRef<jstring> payloadStr(
+        env,
+        env->NewString(reinterpret_cast<const jchar*>(payloadUtf16.data()),
+                       static_cast<jsize>(payloadUtf16.size())));
     if (!payloadStr.get()) {
         LOGE("Failed to create jstring for OSC payload");
         return 0;
