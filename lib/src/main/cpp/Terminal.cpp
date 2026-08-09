@@ -1066,8 +1066,17 @@ void Terminal::invokeKeyboardOutput(const char* data, size_t len) {
 }
 
 int Terminal::invokeOscSequence(int command, const std::string& payload, int cursorRow, int cursorCol) {
-    LOGD("invokeOscSequence: command=%d, payload='%s' (len=%zu), cursor=(%d,%d)",
-         command, payload.c_str(), payload.length(), cursorRow, cursorCol);
+    // The payload is NEVER logged. It is arbitrary data from the remote end and
+    // routinely carries secrets: OSC 52 is the clipboard, so termSelectionSet
+    // hands the *decoded* copied text through here — a password out of a
+    // manager, a token, a private key — and OSC 3008 carries user, hostname and
+    // cwd. Logging it wrote all of that to logcat in plaintext, where adb
+    // logcat, a bug report, or a user pasting a log into an issue picks it up.
+    //
+    // Command and length are kept: they are what makes the log useful for
+    // sequencing and truncation bugs, and neither reveals content.
+    LOGD("invokeOscSequence: command=%d, payload len=%zu, cursor=(%d,%d)",
+         command, payload.length(), cursorRow, cursorCol);
 
     if (!mOscSequenceMethod) {
         LOGE("invokeOscSequence: mOscSequenceMethod is null");
