@@ -67,8 +67,7 @@ class OscMalformedUtf8Test {
     )
 
     /** ESC ] <command> ; <payload> BEL — without the ESC it is not an OSC at all. */
-    private fun osc(command: String, payload: ByteArray): ByteArray =
-        "\u001B]$command;".toByteArray() + payload + byteArrayOf(0x07)
+    private fun osc(command: String, payload: ByteArray): ByteArray = "\u001B]$command;".toByteArray() + payload + byteArrayOf(0x07)
 
     @Test
     fun malformedOscPayloadsDoNotAbortTheProcess() = runBlocking {
