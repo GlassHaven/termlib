@@ -385,6 +385,16 @@ internal class SelectionManager {
         val minRow = minOf(range.startRow, range.endRow)
         val maxRow = maxOf(range.startRow, range.endRow)
 
+        // Anchor-aware, so the clipboard matches what SelectionRange.contains
+        // drew: the first row starts at the anchor the selection began from and
+        // the last row ends at the one it finished on. Using minOf/maxOf on the
+        // two columns agreed with the highlight only for a down-and-right drag
+        // — dragging down and LEFT copied text the user never highlighted (a
+        // selection from row 0 col 8 to row 1 col 2 highlighted "IJ"/"abc" but
+        // copied "CDEFGHIJ"/"abcdefghi").
+        val (_, selStartCol) = range.getStartPosition()
+        val (_, selEndCol) = range.getEndPosition()
+
         return buildString {
             for (row in minRow..maxRow) {
                 // Get line from the appropriate source based on scrollback position
@@ -409,11 +419,11 @@ internal class SelectionManager {
 
                     SelectionMode.CHARACTER, SelectionMode.WORD -> {
                         val startCol = when (row) {
-                            minRow -> minOf(range.startCol, range.endCol)
+                            minRow -> selStartCol
                             else -> 0
                         }
                         val endCol = when (row) {
-                            maxRow -> maxOf(range.startCol, range.endCol)
+                            maxRow -> selEndCol
                             else -> line.cells.size - 1
                         }
 

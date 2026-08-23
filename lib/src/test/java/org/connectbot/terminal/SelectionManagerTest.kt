@@ -583,4 +583,74 @@ class SelectionManagerTest {
         range = selectionManager.selectionRange!!
         assertEquals(11, range.endRow) // Still at 11
     }
+
+    /**
+     * The highlight and the clipboard must agree on which cells are selected.
+     *
+     * [SelectionRange.contains] — the predicate that draws the highlight — is
+     * anchor-aware: the first row runs from the START anchor's column and the
+     * last row up to the END anchor's column. `getSelectedText` used
+     * `minOf`/`maxOf` on the two columns instead, which gives the same answer
+     * only when the drag happens to go down and to the right.
+     *
+     * Drag down and LEFT and they disagree. Selecting from row 0 col 8 to
+     * row 1 col 2 highlights "IJ" then "abc", but the extraction took
+     * min(8,2)=2 on the first row and max(8,2)=8 on the last, copying
+     * "CDEFGHIJ" then "abcdefghi" — six characters per row that were never
+     * highlighted, while the highlight still showed the smaller region.
+     */
+    @Test
+    fun testSelectedTextMatchesHighlightWhenDraggedDownAndLeft() {
+        val snapshot = makeTwoLineSnapshot("ABCDEFGHIJ", "abcdefghij")
+
+        selectionManager.startSelection(0, 8, cols = 10, mode = SelectionMode.CHARACTER)
+        selectionManager.updateSelection(1, 2)
+        selectionManager.endSelection()
+
+        val range = selectionManager.selectionRange!!
+        val rowText = listOf("ABCDEFGHIJ", "abcdefghij")
+
+        // Read the highlight straight off the drawing predicate.
+        val highlighted = (0..1).joinToString("\n") { row ->
+            (0..9).filter { col -> range.contains(row, col) }
+                .joinToString("") { col -> rowText[row][col].toString() }
+        }
+        assertEquals("IJ\nabc", highlighted)
+
+        // What reaches the clipboard must be exactly that.
+        assertEquals(highlighted, selectionManager.getSelectedText(snapshot))
+    }
+
+    /** The down-and-right drag that already behaved must keep behaving. */
+    @Test
+    fun testSelectedTextMatchesHighlightWhenDraggedDownAndRight() {
+        val snapshot = makeTwoLineSnapshot("ABCDEFGHIJ", "abcdefghij")
+
+        selectionManager.startSelection(0, 2, cols = 10, mode = SelectionMode.CHARACTER)
+        selectionManager.updateSelection(1, 8)
+        selectionManager.endSelection()
+
+        assertEquals("CDEFGHIJ\nabcdefghi", selectionManager.getSelectedText(snapshot))
+    }
+
+    private fun makeTwoLineSnapshot(first: String, second: String): TerminalSnapshot {
+        val cols = maxOf(first.length, second.length)
+        val lines = listOf(first, second).mapIndexed { i, t ->
+            TerminalLine(row = i, cells = t.padEnd(cols, ' ').map { cell(it) })
+        }
+        return TerminalSnapshot(
+            lines = lines,
+            scrollback = emptyList(),
+            cursorRow = 1,
+            cursorCol = 0,
+            cursorVisible = true,
+            cursorBlink = true,
+            cursorShape = CursorShape.BLOCK,
+            terminalTitle = "",
+            rows = 2,
+            cols = cols,
+            timestamp = System.currentTimeMillis(),
+            sequenceNumber = 1L,
+        )
+    }
 }
