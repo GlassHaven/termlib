@@ -31,6 +31,16 @@ interface SelectionController {
     val isSelectionActive: Boolean
 
     /**
+     * Current scrollback view offset: how many lines the viewport is scrolled
+     * up from the live bottom (0 = showing the newest output). Consumers that
+     * correlate selection rows with screen-only line lists (Haven's smart
+     * copy) must treat this as the coordinate-space mismatch signal: when it
+     * is non-zero, selection rows resolve against scrollback, not the visible
+     * screen.
+     */
+    val scrollbackPosition: Int get() = 0
+
+    /**
      * Start selection mode at the current cursor position or center of screen.
      * @param mode The selection mode to use (CHARACTER, WORD, or LINE)
      */
