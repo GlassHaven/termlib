@@ -2931,7 +2931,15 @@ internal fun TerminalWithAccessibility(
                             onClick = {
                                 val selectedText =
                                     selectionManager.getSelectedText(screenState.snapshot, screenState.scrollbackPosition)
-                                clipboardManager.setText(AnnotatedString(selectedText))
+                                // Only write when there is something to write.
+                                // getSelectedText returns "" when the selection's
+                                // rows have drifted out of the snapshot (new output
+                                // between long-press and Copy), and setText with an
+                                // empty string would clobber the user's previous
+                                // clipboard content (#639).
+                                if (selectedText.isNotEmpty()) {
+                                    clipboardManager.setText(AnnotatedString(selectedText))
+                                }
                                 selectionManager.clearSelection()
                             },
                             modifier = Modifier.size(COPY_BUTTON_SIZE),
