@@ -1,5 +1,7 @@
 // Top-level build file where you can add configuration options common to all sub-projects/modules.
 
+import net.researchgate.release.ReleaseExtension
+
 plugins {
     alias(libs.plugins.android.library) apply false
     alias(libs.plugins.android.application) apply false
@@ -9,6 +11,19 @@ plugins {
     alias(libs.plugins.roborazzi) apply false
     alias(libs.plugins.kover) apply false
     alias(libs.plugins.release)
+}
+
+configure<ReleaseExtension> {
+    tagTemplate.set("\${version}")
+    buildTasks.set(listOf("build"))
+
+    git {
+        requireBranch.set("^(main|release/.+|release-work/.+)$")
+        commitVersionFileOnly.set(true)
+        if (providers.gradleProperty("release.noPush").isPresent) {
+            pushToRemote.set(false)
+        }
+    }
 }
 
 spotless {
