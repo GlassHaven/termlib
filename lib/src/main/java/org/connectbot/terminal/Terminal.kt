@@ -73,6 +73,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.scale
@@ -2691,11 +2692,14 @@ internal fun TerminalWithAccessibility(
                         // Hide Canvas from accessibility tree - AccessibilityOverlay provides semantic structure
                     },
             ) {
-                // Fill background. backgroundOpacity < 1 makes only this
+                // Fill background. backgroundOpacity < 1 makes this
                 // screen-fill translucent; default/empty cells skip painting
                 // (see drawLine's defaultBg check) so they reveal whatever the
                 // host renders behind the Canvas (e.g. the device wallpaper via
-                // a translucent window). Cell-coloured backgrounds stay opaque.
+                // a translucent window). Cells painted by the app (full-screen
+                // TUIs set their theme background on every cell) get the same
+                // alpha in drawLine, so a translucent terminal blends
+                // uniformly instead of going opaque wherever the app painted.
                 drawRect(
                     color = if (backgroundOpacity >= 1f) {
                         backgroundColor
@@ -2773,6 +2777,7 @@ internal fun TerminalWithAccessibility(
                             autoDetectUrls = terminalEmulator.autoDetectUrls,
                             selectionBackgroundColor = selectionBackgroundColor,
                             selectionForegroundColor = selectionForegroundColor,
+                            backgroundOpacity = backgroundOpacity,
                         )
                     }
 
@@ -3137,6 +3142,7 @@ private fun DrawScope.drawLine(
     autoDetectUrls: Boolean = false,
     selectionBackgroundColor: Color = Color(0xFFB3D7FF),
     selectionForegroundColor: Color = Color.Black,
+    backgroundOpacity: Float = 1f,
 ) {
     val y = row * charHeight
     var x = 0f
@@ -3158,13 +3164,28 @@ private fun DrawScope.drawLine(
         val baseFgColor = if (cell.reverse) cell.bgColor else cell.fgColor
         val bgColor = if (cell.reverse) cell.fgColor else cell.bgColor
 
-        // Draw background (with selection highlight)
+        // Draw background (with selection highlight). App-painted cell
+        // backgrounds take the same opacity as the screen fill, so a
+        // < 1.0 terminal opacity blends the whole pane, not just the
+        // margins (a full-screen TUI sets its theme background on every
+        // cell — without this the pane renders opaque behind such apps).
+        // The cell rect REPLACES the fill beneath it (Src) rather than
+        // stacking a second translucent layer over it, so a painted cell
+        // and a plain cell land at exactly the same alpha. Selection
+        // keeps its own alpha: it's Haven's chrome, and readability wins
+        // there.
         val finalBgColor = if (isSelected) selectionBackgroundColor else bgColor
         if (finalBgColor != defaultBg || isSelected) {
+            val opaque = isSelected || backgroundOpacity >= 1f
             drawRect(
-                color = finalBgColor,
+                color = if (opaque) {
+                    finalBgColor
+                } else {
+                    finalBgColor.copy(alpha = backgroundOpacity)
+                },
                 topLeft = Offset(x, y),
                 size = Size(cellWidth, charHeight),
+                blendMode = if (opaque) BlendMode.SrcOver else BlendMode.Src,
             )
         }
 
