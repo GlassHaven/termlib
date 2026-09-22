@@ -3108,6 +3108,7 @@ internal fun TerminalWithAccessibility(
                     view.allowStandardKeyboard = allowStandardKeyboard
                     view.rawKeyboardMode = rawKeyboardMode
                     view.customImeFlags = customImeFlags
+                    view.onPasteRequest = onPasteRequest
                     view.onInteropUpdate()
                 },
                 modifier = Modifier

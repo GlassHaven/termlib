@@ -637,6 +637,9 @@ internal class ImeInputView(
 
     override fun onCheckIsTextEditor(): Boolean = !rawKeyboardMode
 
+    /** Delegate IME paste actions to the same clipboard handler as the terminal context menu. */
+    var onPasteRequest: (() -> Unit)? = null
+
     private var activeConnection: TerminalInputConnection? = null
 
     /**
@@ -665,6 +668,16 @@ internal class ImeInputView(
     ) : BaseInputConnection(targetView, fullEditor) {
 
         private var composingText: String = ""
+
+        override fun performContextMenuAction(id: Int): Boolean {
+            if (id == android.R.id.paste || id == android.R.id.pasteAsPlainText) {
+                val paste = onPasteRequest ?: return false
+                paste()
+                return true
+            }
+            return super.performContextMenuAction(id)
+        }
+
 
         /**
          * Tell the IME where the cursor is. Custom InputConnection
