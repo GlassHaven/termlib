@@ -73,8 +73,7 @@ class ImeExtractedTextMonitorTest {
         keyboardHandler = KeyboardHandler(terminalEmulator)
     }
 
-    private fun makeView(): ImeInputView =
-        ImeInputView(context, keyboardHandler, imm, onUpdateSelection = { _, _, _, _, _ -> })
+    private fun makeView(): ImeInputView = ImeInputView(context, keyboardHandler, imm, onUpdateSelection = { _, _, _, _, _ -> })
 
     private fun ImeInputView.ic(composeMode: Boolean = false): BaseInputConnection {
         isComposeModeActive = composeMode
