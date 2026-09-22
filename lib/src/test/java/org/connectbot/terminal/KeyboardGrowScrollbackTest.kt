@@ -32,12 +32,11 @@ class KeyboardGrowScrollbackTest {
     /** DSR responses arrive here as if typed; native parse is synchronous. */
     private val keyboardOut = mutableListOf<ByteArray>()
 
-    private fun createEmulator(initialRows: Int, initialCols: Int): TerminalEmulatorImpl =
-        TerminalEmulatorFactory.create(
-            initialRows = initialRows,
-            initialCols = initialCols,
-            onKeyboardInput = { data -> synchronized(keyboardOut) { keyboardOut.add(data) } },
-        ) as TerminalEmulatorImpl
+    private fun createEmulator(initialRows: Int, initialCols: Int): TerminalEmulatorImpl = TerminalEmulatorFactory.create(
+        initialRows = initialRows,
+        initialCols = initialCols,
+        onKeyboardInput = { data -> synchronized(keyboardOut) { keyboardOut.add(data) } },
+    ) as TerminalEmulatorImpl
 
     private fun visibleText(e: TerminalEmulatorImpl): String {
         InstrumentationRegistry.getInstrumentation().waitForIdleSync()
@@ -62,8 +61,7 @@ class KeyboardGrowScrollbackTest {
         return (m.groupValues[1].toInt() - 1) to (m.groupValues[2].toInt() - 1)
     }
 
-    private fun String.escapeRepr() =
-        map { if (it.code < 32) "\\u%04x".format(it.code) else it }.joinToString("")
+    private fun String.escapeRepr() = map { if (it.code < 32) "\\u%04x".format(it.code) else it }.joinToString("")
 
     @Test
     fun `rows-only grow with scrollback keeps the cursor at its pre-grow cell`() = runBlocking {
