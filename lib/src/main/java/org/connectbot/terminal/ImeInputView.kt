@@ -19,6 +19,7 @@ package org.connectbot.terminal
 import android.content.Context
 import android.graphics.Rect
 import android.os.Build
+import android.text.Editable
 import android.text.Selection
 import android.view.KeyEvent
 import android.view.View
@@ -303,6 +304,15 @@ internal class ImeInputView(
         private var batchEditDepth: Int = 0
         private var selectionUpdatePending: Boolean = false
 
+        /**
+         * Cookie from the last [InputConnection.GET_EXTRACTED_TEXT_MONITOR] request, or -1
+         * when no IME is monitoring. A monitoring IME polls the editor once and afterwards
+         * expects [InputMethodManager.updateExtractedText] pushes; without them its mirror of
+         * this editor goes stale (SwiftKey composes over text the shell already executed).
+         * The token lives on the connection, so an IME restart starts a fresh one.
+         */
+        private var extractedTextToken: Int = -1
+
         override fun performContextMenuAction(id: Int): Boolean {
             if (id == android.R.id.paste || id == android.R.id.pasteAsPlainText) {
                 val paste = onPasteRequest ?: return false
@@ -331,8 +341,15 @@ internal class ImeInputView(
         override fun getExtractedText(request: ExtractedTextRequest?, flags: Int): ExtractedText? {
             if (!fullEditor) return super.getExtractedText(request, flags)
             val buffer = editable ?: return null
-            return ExtractedText().apply {
-                text = if (flags and InputConnection.GET_TEXT_WITH_STYLES != 0) {
+            if (request != null && flags and InputConnection.GET_EXTRACTED_TEXT_MONITOR != 0) {
+                extractedTextToken = request.token
+            }
+            return buildExtractedText(buffer, flags and InputConnection.GET_TEXT_WITH_STYLES != 0)
+        }
+
+        private fun buildExtractedText(buffer: Editable, withStyles: Boolean): ExtractedText =
+            ExtractedText().apply {
+                text = if (withStyles) {
                     buffer.subSequence(0, buffer.length)
                 } else {
                     buffer.toString()
@@ -342,9 +359,8 @@ internal class ImeInputView(
                 partialEndOffset = -1
                 selectionStart = Selection.getSelectionStart(buffer).coerceAtLeast(0)
                 selectionEnd = Selection.getSelectionEnd(buffer).coerceAtLeast(0)
-                this.flags = if ('\n' in buffer) 0 else ExtractedText.FLAG_SINGLE_LINE
+                flags = if ('\n' in buffer) 0 else ExtractedText.FLAG_SINGLE_LINE
             }
-        }
 
         override fun setSelection(start: Int, end: Int): Boolean {
             val result = super.setSelection(start, end)
@@ -716,6 +732,15 @@ internal class ImeInputView(
                 BaseInputConnection.getComposingSpanStart(buffer),
                 BaseInputConnection.getComposingSpanEnd(buffer),
             )
+            // Keep a monitoring IME's mirror current: it will not re-poll, so every edit
+            // must be pushed. Plain text is enough — the IME only reads the characters.
+            if (extractedTextToken >= 0) {
+                inputMethodManager.updateExtractedText(
+                    this@ImeInputView,
+                    extractedTextToken,
+                    buildExtractedText(buffer, withStyles = false),
+                )
+            }
         }
 
         fun validateTerminalCursorContext(textBeforeCursor: String) {
