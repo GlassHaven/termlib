@@ -347,20 +347,19 @@ internal class ImeInputView(
             return buildExtractedText(buffer, flags and InputConnection.GET_TEXT_WITH_STYLES != 0)
         }
 
-        private fun buildExtractedText(buffer: Editable, withStyles: Boolean): ExtractedText =
-            ExtractedText().apply {
-                text = if (withStyles) {
-                    buffer.subSequence(0, buffer.length)
-                } else {
-                    buffer.toString()
-                }
-                startOffset = 0
-                partialStartOffset = -1
-                partialEndOffset = -1
-                selectionStart = Selection.getSelectionStart(buffer).coerceAtLeast(0)
-                selectionEnd = Selection.getSelectionEnd(buffer).coerceAtLeast(0)
-                flags = if ('\n' in buffer) 0 else ExtractedText.FLAG_SINGLE_LINE
+        private fun buildExtractedText(buffer: Editable, withStyles: Boolean): ExtractedText = ExtractedText().apply {
+            text = if (withStyles) {
+                buffer.subSequence(0, buffer.length)
+            } else {
+                buffer.toString()
             }
+            startOffset = 0
+            partialStartOffset = -1
+            partialEndOffset = -1
+            selectionStart = Selection.getSelectionStart(buffer).coerceAtLeast(0)
+            selectionEnd = Selection.getSelectionEnd(buffer).coerceAtLeast(0)
+            flags = if ('\n' in buffer) 0 else ExtractedText.FLAG_SINGLE_LINE
+        }
 
         override fun setSelection(start: Int, end: Int): Boolean {
             val result = super.setSelection(start, end)
