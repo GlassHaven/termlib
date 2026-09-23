@@ -106,6 +106,23 @@ sealed interface TerminalEmulator : AutoCloseable {
     fun resize(newRows: Int, newCols: Int)
 
     /**
+     * Whether a rows-only grow backfills the top rows by popping scrollback
+     * (history returns into view, live content shifts down).
+     *
+     * Default true — the shell behaviour: the prompt stays pinned to the
+     * bottom and restored history is visible. Sessions whose app repaints
+     * the whole frame from its own model on WINCH (the UML guest console
+     * runs opencode under a launcher that re-signals it) should set this
+     * false: an incremental line-diff renderer (Ink) skips writing lines its
+     * model believes unchanged, so a backfilling grow — which reflows
+     * content down under the app — strands the popped scrollback in every
+     * line the diff skips. With the backfill off, a grow anchors the screen
+     * at the top with blank rows at the bottom and the app's own repaint
+     * fills them.
+     */
+    var backfillScrollbackOnGrow: Boolean
+
+    /**
      * Dispatch a key event to the terminal.
      */
     fun dispatchKey(modifiers: Int, key: Int)
@@ -420,6 +437,8 @@ internal class TerminalEmulatorImpl(
 
     // Handler for escaping native mutex
     private val handler = Handler(looper)
+
+    override var backfillScrollbackOnGrow: Boolean = true
 
     // Default colors (can be updated via setDefaultColors)
     private var currentDefaultForeground: Color = defaultForeground
@@ -986,6 +1005,7 @@ internal class TerminalEmulatorImpl(
     override fun popScrollbackLine(cols: Int, cells: Array<ScreenCell>): Int {
         synchronized(damageLock) {
             if (scrollback.isEmpty()) return 0
+            if (!backfillScrollbackOnGrow) return 0
 
             var line = scrollback.removeAt(scrollback.size - 1)
             scrollbackDirty = true

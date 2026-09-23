@@ -756,8 +756,22 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
         clearcell(screen, &new_buffer[pos.row * new_cols + pos.col]);
       new_row--;
 
-      if(active)
+      if(active) {
         statefields->pos.row++;
+        /* HAVEN PATCH: the reflow walk mapped the cursor into the shifted
+         * frame — it followed its line down as history was restored above.
+         * A cursor-tracking TUI repaints relative to where its own model
+         * still holds the cursor, the pre-resize cell, so walking the
+         * cursor down with the backfill desyncs the app by exactly the
+         * restored row count (opencode's post-grow repaint landed 17 rows
+         * off, stranding stale frame rows mid-screen while the keyboard
+         * hid). Step the cursor back up one row per restored line so it
+         * stays at the cell the app believes it is on; the partial-fill
+         * path below subtracts the remaining shift, so every grow ends
+         * with the cursor at its pre-resize cell. */
+        if(new_cursor.row >= 0)
+          new_cursor.row--;
+      }
     }
   }
   if(new_row >= 0) {

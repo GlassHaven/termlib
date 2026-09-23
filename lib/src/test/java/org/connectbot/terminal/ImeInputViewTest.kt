@@ -83,6 +83,51 @@ class ImeInputViewTest {
         return onCreateInputConnection(EditorInfo()) as BaseInputConnection
     }
 
+    // === IME paste actions reach the terminal paste handler ===
+    //
+    // Some IMEs offer paste through the InputConnection's context-menu
+    // actions (GBoard's paste suggestion) rather than key events. Without
+    // performContextMenuAction handling them, those suggestions are
+    // silently dropped.
+
+    @Test
+    fun testImePasteActionsInvokeTerminalPasteHandler() {
+        for (composeMode in listOf(false, true)) {
+            val view = makeView()
+            var pasteCount = 0
+            view.onPasteRequest = { pasteCount++ }
+            val ic = view.ic(composeMode)
+
+            assertTrue(ic.performContextMenuAction(android.R.id.paste))
+            assertEquals(1, pasteCount)
+            assertTrue(ic.performContextMenuAction(android.R.id.pasteAsPlainText))
+            assertEquals(2, pasteCount)
+            assertFalse(ic.performContextMenuAction(android.R.id.copy))
+            assertEquals(2, pasteCount)
+        }
+    }
+
+    @Test
+    fun testImePasteUsesUpdatedHandlerWithoutRecreatingConnection() {
+        val view = makeView()
+        val ic = view.ic()
+        assertFalse(ic.performContextMenuAction(android.R.id.paste))
+        assertFalse(ic.performContextMenuAction(android.R.id.pasteAsPlainText))
+
+        var firstCount = 0
+        var secondCount = 0
+        view.onPasteRequest = { firstCount++ }
+        assertTrue(ic.performContextMenuAction(android.R.id.paste))
+        view.onPasteRequest = { secondCount++ }
+        assertTrue(ic.performContextMenuAction(android.R.id.paste))
+        assertEquals(1, firstCount)
+        assertEquals(1, secondCount)
+
+        view.onPasteRequest = null
+        assertFalse(ic.performContextMenuAction(android.R.id.paste))
+        assertEquals(1, secondCount)
+    }
+
     // === #298: the IME must be able to READ the document ===
     //
     // BaseInputConnection.getExtractedText() always returns null. In Standard mode we
