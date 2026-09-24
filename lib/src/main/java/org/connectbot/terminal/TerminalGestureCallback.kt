@@ -66,8 +66,9 @@ interface TerminalGestureCallback {
      * [MouseDragPhase.Move] for each cell change, and once at
      * [MouseDragPhase.End] when the press releases.
      *
-     * Reached only after a long-press has armed the gesture (see [onLongPress]);
-     * a drag without a preceding long-press scrolls instead.
+     * Reached after a long-press has armed the gesture (see [onLongPress]), or
+     * when movement crosses touch slop while the host opts into immediate
+     * mouse-drag. A drag without either of those scrolls instead.
      *
      * Return `true` from [MouseDragPhase.Start] to claim the gesture — the
      * terminal will then route subsequent moves and the end here, and skip
