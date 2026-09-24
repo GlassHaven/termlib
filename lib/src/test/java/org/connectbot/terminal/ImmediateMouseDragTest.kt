@@ -7,10 +7,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performTouchInput
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.TextUnit
+import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import java.util.Collections
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -19,6 +18,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.shadows.ShadowLog
+import java.util.Collections
 
 @RunWith(AndroidJUnit4::class)
 class ImmediateMouseDragTest {
@@ -54,8 +54,7 @@ class ImmediateMouseDragTest {
         fun phases() = drags.map { it.third }
     }
 
-    private fun selectionLines() =
-        ShadowLog.getLogsForTag("HavenGesture").map { it.msg }.filter { "selection-started" in it }
+    private fun selectionLines() = ShadowLog.getLogsForTag("HavenGesture").map { it.msg }.filter { "selection-started" in it }
 
     private fun render(
         immediateMouseDrag: Boolean,
@@ -64,7 +63,7 @@ class ImmediateMouseDragTest {
         populateScrollback: Boolean = false,
         onFontSizeChanged: ((TextUnit) -> Unit)? = null,
         onScrollControllerAvailable: ((ScrollController) -> Unit)? = null,
-    ) {
+    ): TerminalEmulator {
         val emulator = TerminalEmulatorFactory.create(initialRows = 24, initialCols = 80)
         runBlocking {
             if (populateScrollback) {
@@ -86,6 +85,7 @@ class ImmediateMouseDragTest {
             )
         }
         composeTestRule.waitForIdle()
+        return emulator
     }
 
     @Test
@@ -284,8 +284,8 @@ class ImmediateMouseDragTest {
     @Test
     fun `ON outside edge coordinates stay clamped to valid terminal rows`() {
         val cb = RecordingCallback()
-        render(immediateMouseDrag = true, callback = cb)
-        fun rowsAt(y: Float): List<Int> {
+        val emulator = render(immediateMouseDrag = true, callback = cb)
+        fun rowsAt(top: Boolean): List<Int> {
             cb.drags.clear()
             cb.scrolls.clear()
             cb.events.clear()
@@ -293,19 +293,21 @@ class ImmediateMouseDragTest {
             composeTestRule.mainClock.advanceTimeBy(80)
             composeTestRule.onRoot().performTouchInput {
                 moveBy(Offset(80f, 0f))
-                moveTo(Offset(center.x + 80f, y))
+                val outsideY = if (top) -200f else bottomCenter.y + 200f
+                moveTo(Offset(center.x + 80f, outsideY))
                 up()
             }
             composeTestRule.waitForIdle()
             return cb.drags.map { it.second } + cb.scrolls.map { it.second }
         }
 
-        val topRows = rowsAt(-200f)
-        val bottomRows = rowsAt(800f)
-        assertTrue(topRows.isNotEmpty() && topRows.all { it >= 0 })
-        assertTrue(bottomRows.isNotEmpty() && bottomRows.all { it >= 0 })
+        val topRows = rowsAt(top = true)
+        val bottomRows = rowsAt(top = false)
+        val rows = emulator.dimensions.rows
+        assertTrue(topRows.isNotEmpty() && topRows.all { it in 0 until rows })
+        assertTrue(bottomRows.isNotEmpty() && bottomRows.all { it in 0 until rows })
         assertTrue(topRows.contains(0))
-        assertTrue(bottomRows.max() > 0)
+        assertTrue(bottomRows.contains(rows - 1))
     }
 
     @Test
@@ -376,21 +378,39 @@ class ImmediateMouseDragTest {
     }
 
     @Test
-    fun `ON late second pointer ends remote drag before remote two-finger scroll`() {
+    fun `ON late second pointer ends remote drag before local two-finger pan`() {
         ShadowLog.clear()
         val cb = RecordingCallback()
-        render(immediateMouseDrag = true, callback = cb)
+        var scrollController: ScrollController? = null
+        render(
+            immediateMouseDrag = true,
+            callback = cb,
+            populateScrollback = true,
+            onScrollControllerAvailable = { scrollController = it },
+        )
+        assertTrue((scrollController?.maxScrollback ?: 0) > 0)
         composeTestRule.onRoot().performTouchInput { down(center) }
         composeTestRule.mainClock.advanceTimeBy(80)
         composeTestRule.onRoot().performTouchInput { moveBy(Offset(180f, 0f)) }
         composeTestRule.waitForIdle()
         assertEquals(MouseDragPhase.Start, cb.phases().first())
+
+        var first = Offset.Unspecified
+        var second = Offset.Unspecified
         composeTestRule.onRoot().performTouchInput {
-            val first = center + Offset(180f, 0f)
-            val second = center + Offset(60f, 0f)
+            first = center + Offset(180f, 0f)
+            second = center + Offset(60f, 0f)
             down(1, second)
-            updatePointerTo(0, first + Offset(0f, -120f))
-            updatePointerTo(1, second + Offset(0f, -120f))
+        }
+        composeTestRule.waitForIdle()
+        assertEquals(1, cb.phases().count { it == MouseDragPhase.End })
+
+        composeTestRule.onRoot().performTouchInput {
+            updatePointerTo(0, first + Offset(0f, 80f))
+            updatePointerTo(1, second + Offset(0f, 80f))
+            move()
+            updatePointerTo(0, first + Offset(0f, 160f))
+            updatePointerTo(1, second + Offset(0f, 160f))
             move()
             up(1)
             up()
@@ -398,38 +418,21 @@ class ImmediateMouseDragTest {
         composeTestRule.waitForIdle()
         assertEquals(1, cb.phases().count { it == MouseDragPhase.End })
         assertFalse("second pointer must not start local selection", selectionLines().isNotEmpty())
-        assertTrue("two-finger pan must reach remote wheel", cb.scrolls.any { !it.third })
-        assertTrue(
-            "drag End must precede two-finger wheel: ${cb.events}",
-            cb.events.indexOf("drag:End") < cb.events.indexOf("scroll:down"),
+        assertTrue("two-finger pan must move local scrollback", scrollController!!.scrollbackPosition > 0)
+        assertTrue("two-finger pan must not emit remote wheel", cb.scrolls.isEmpty())
+    }
+
+    @Test
+    fun `ON early second pointer pans local scrollback without MouseDrag`() {
+        val cb = RecordingCallback()
+        var scrollController: ScrollController? = null
+        render(
+            immediateMouseDrag = true,
+            callback = cb,
+            populateScrollback = true,
+            onScrollControllerAvailable = { scrollController = it },
         )
-    }
-
-    @Test
-    fun `ON early second pointer upward pan emits natural wheel down without MouseDrag`() {
-        val cb = RecordingCallback()
-        render(immediateMouseDrag = true, callback = cb)
-        composeTestRule.onRoot().performTouchInput {
-            val first = center + Offset(-60f, 0f)
-            val second = center + Offset(60f, 0f)
-            down(0, first)
-            down(1, second)
-            updatePointerTo(0, first + Offset(0f, -120f))
-            updatePointerTo(1, second + Offset(0f, -120f))
-            move()
-            up(1)
-            up(0)
-        }
-        composeTestRule.waitForIdle()
-        assertTrue(cb.drags.isEmpty())
-        assertTrue("upward two-finger pan must emit natural wheel down", cb.scrolls.any { !it.third })
-        assertTrue(cb.taps.isEmpty())
-    }
-
-    @Test
-    fun `ON two-finger downward pan emits natural wheel up`() {
-        val cb = RecordingCallback()
-        render(immediateMouseDrag = true, callback = cb)
+        assertTrue((scrollController?.maxScrollback ?: 0) > 0)
         composeTestRule.onRoot().performTouchInput {
             val first = center + Offset(-60f, 0f)
             val second = center + Offset(60f, 0f)
@@ -445,7 +448,43 @@ class ImmediateMouseDragTest {
             up(0)
         }
         composeTestRule.waitForIdle()
-        assertTrue("downward two-finger pan must emit natural wheel up", cb.scrolls.any { it.third })
+        assertTrue(cb.drags.isEmpty())
+        assertTrue("two-finger pan must move local scrollback", scrollController!!.scrollbackPosition > 0)
+        assertTrue("two-finger pan must not emit remote wheel", cb.scrolls.isEmpty())
+        assertTrue(cb.taps.isEmpty())
+    }
+
+    @Test
+    fun `ON two-finger upward pan moves toward local live bottom`() {
+        val cb = RecordingCallback()
+        var scrollController: ScrollController? = null
+        render(
+            immediateMouseDrag = true,
+            callback = cb,
+            populateScrollback = true,
+            onScrollControllerAvailable = { scrollController = it },
+        )
+        scrollController!!.scrollBy(20)
+        composeTestRule.waitForIdle()
+        val startingPosition = scrollController!!.scrollbackPosition
+        assertTrue(startingPosition > 0)
+        composeTestRule.onRoot().performTouchInput {
+            val first = center + Offset(-60f, 0f)
+            val second = center + Offset(60f, 0f)
+            down(0, first)
+            down(1, second)
+            updatePointerTo(0, first + Offset(0f, -80f))
+            updatePointerTo(1, second + Offset(0f, -80f))
+            move()
+            updatePointerTo(0, first + Offset(0f, -160f))
+            updatePointerTo(1, second + Offset(0f, -160f))
+            move()
+            up(1)
+            up(0)
+        }
+        composeTestRule.waitForIdle()
+        assertTrue(scrollController!!.scrollbackPosition < startingPosition)
+        assertTrue("two-finger pan must not emit remote wheel", cb.scrolls.isEmpty())
         assertTrue(cb.drags.isEmpty())
     }
 
