@@ -7,6 +7,7 @@ package org.connectbot.terminal {
     method @InaccessibleFromKotlin public boolean isComposeModeActive();
     method public void startComposeMode();
     method public void stopComposeMode();
+    method public default void syncImeShortcutInputMode(org.connectbot.terminal.ImeShortcutInputMode mode);
     method public void toggleComposeMode();
     property public abstract boolean isComposeModeActive;
     property public default int pendingDeadChar;
@@ -21,6 +22,106 @@ package org.connectbot.terminal {
 
   public static final class DelKeyMode.Delete extends org.connectbot.terminal.DelKeyMode {
     field public static final org.connectbot.terminal.DelKeyMode.Delete INSTANCE;
+  }
+
+  public enum ImeShortcutInputMode {
+    enum_constant public static final org.connectbot.terminal.ImeShortcutInputMode DISABLED;
+    enum_constant public static final org.connectbot.terminal.ImeShortcutInputMode FORCE_ASCII;
+    enum_constant public static final org.connectbot.terminal.ImeShortcutInputMode TYPE_NULL;
+  }
+
+  public final class InlineImageLimits {
+    ctor public InlineImageLimits();
+    ctor public InlineImageLimits(optional int encodedBytes, optional int decodedBytes, optional int transferBytes, optional int uploadBytes, optional int maxDimension, optional int maxPixels, optional int maxImages, optional int maxPlacements, optional int maxFrames);
+    method public int component1();
+    method public int component2();
+    method public int component3();
+    method public int component4();
+    method public int component5();
+    method public int component6();
+    method public int component7();
+    method public int component8();
+    method public int component9();
+    method public org.connectbot.terminal.InlineImageLimits copy(optional int encodedBytes, optional int decodedBytes, optional int transferBytes, optional int uploadBytes, optional int maxDimension, optional int maxPixels, optional int maxImages, optional int maxPlacements, optional int maxFrames);
+    method @InaccessibleFromKotlin public int getDecodedBytes();
+    method @InaccessibleFromKotlin public int getEncodedBytes();
+    method @InaccessibleFromKotlin public int getMaxDimension();
+    method @InaccessibleFromKotlin public int getMaxFrames();
+    method @InaccessibleFromKotlin public int getMaxImages();
+    method @InaccessibleFromKotlin public int getMaxPixels();
+    method @InaccessibleFromKotlin public int getMaxPlacements();
+    method @InaccessibleFromKotlin public int getTransferBytes();
+    method @InaccessibleFromKotlin public int getUploadBytes();
+    property public int decodedBytes;
+    property public int encodedBytes;
+    property public int maxDimension;
+    property public int maxFrames;
+    property public int maxImages;
+    property public int maxPixels;
+    property public int maxPlacements;
+    property public int transferBytes;
+    property public int uploadBytes;
+  }
+
+  public enum InlineImageProtocolType {
+    enum_constant public static final org.connectbot.terminal.InlineImageProtocolType ITERM2;
+    enum_constant public static final org.connectbot.terminal.InlineImageProtocolType KITTY;
+  }
+
+  public final class InlineImageRequest {
+    ctor public InlineImageRequest(org.connectbot.terminal.InlineImageProtocolType protocol, String action, optional Long? imageId, optional Long? imageNumber, optional String? name, optional Long? declaredSizeBytes, optional Integer? pixelWidth, optional Integer? pixelHeight);
+    method public org.connectbot.terminal.InlineImageProtocolType component1();
+    method public String component2();
+    method public Long? component3();
+    method public Long? component4();
+    method public String? component5();
+    method public Long? component6();
+    method public Integer? component7();
+    method public Integer? component8();
+    method public org.connectbot.terminal.InlineImageRequest copy(optional org.connectbot.terminal.InlineImageProtocolType protocol, optional String action, optional Long? imageId, optional Long? imageNumber, optional String? name, optional Long? declaredSizeBytes, optional Integer? pixelWidth, optional Integer? pixelHeight);
+    method @InaccessibleFromKotlin public String getAction();
+    method @InaccessibleFromKotlin public Long? getDeclaredSizeBytes();
+    method @InaccessibleFromKotlin public Long? getImageId();
+    method @InaccessibleFromKotlin public Long? getImageNumber();
+    method @InaccessibleFromKotlin public String? getName();
+    method @InaccessibleFromKotlin public Integer? getPixelHeight();
+    method @InaccessibleFromKotlin public Integer? getPixelWidth();
+    method @InaccessibleFromKotlin public org.connectbot.terminal.InlineImageProtocolType getProtocol();
+    property public String action;
+    property public Long? declaredSizeBytes;
+    property public Long? imageId;
+    property public Long? imageNumber;
+    property public String? name;
+    property public Integer? pixelHeight;
+    property public Integer? pixelWidth;
+    property public org.connectbot.terminal.InlineImageProtocolType protocol;
+  }
+
+  public abstract sealed exhaustive class InlineImages {
+  }
+
+  public static final class InlineImages.Ask extends org.connectbot.terminal.InlineImages {
+    ctor public InlineImages.Ask(optional org.connectbot.terminal.InlineImageLimits limits, kotlin.jvm.functions.Function2<? super org.connectbot.terminal.InlineImageRequest,? super kotlin.coroutines.Continuation<? super java.lang.Boolean>,? extends java.lang.Object?> confirm);
+    method public org.connectbot.terminal.InlineImageLimits component1();
+    method public kotlin.jvm.functions.Function2<org.connectbot.terminal.InlineImageRequest,kotlin.coroutines.Continuation<? super java.lang.Boolean>,java.lang.Object?> component2();
+    method public org.connectbot.terminal.InlineImages.Ask copy(optional org.connectbot.terminal.InlineImageLimits limits, optional kotlin.jvm.functions.Function2<? super org.connectbot.terminal.InlineImageRequest,? super kotlin.coroutines.Continuation<? super java.lang.Boolean>,? extends java.lang.Object?> confirm);
+    method @InaccessibleFromKotlin public kotlin.jvm.functions.Function2<org.connectbot.terminal.InlineImageRequest,kotlin.coroutines.Continuation<? super java.lang.Boolean>,java.lang.Object?> getConfirm();
+    method @InaccessibleFromKotlin public org.connectbot.terminal.InlineImageLimits getLimits();
+    property public kotlin.jvm.functions.Function2<org.connectbot.terminal.InlineImageRequest,kotlin.coroutines.Continuation<? super java.lang.Boolean>,?> confirm;
+    property public org.connectbot.terminal.InlineImageLimits limits;
+  }
+
+  public static final class InlineImages.Off extends org.connectbot.terminal.InlineImages {
+    field public static final org.connectbot.terminal.InlineImages.Off INSTANCE;
+  }
+
+  public static final class InlineImages.On extends org.connectbot.terminal.InlineImages {
+    ctor public InlineImages.On();
+    ctor public InlineImages.On(optional org.connectbot.terminal.InlineImageLimits limits);
+    method public org.connectbot.terminal.InlineImageLimits component1();
+    method public org.connectbot.terminal.InlineImages.On copy(optional org.connectbot.terminal.InlineImageLimits limits);
+    method @InaccessibleFromKotlin public org.connectbot.terminal.InlineImageLimits getLimits();
+    property public org.connectbot.terminal.InlineImageLimits limits;
   }
 
   public interface ModifierManager {
@@ -87,13 +188,21 @@ package org.connectbot.terminal {
 
   public final class TerminalDimensions {
     ctor public TerminalDimensions(int rows, int columns);
+    ctor public TerminalDimensions(int rows, int columns, int widthPixels, int heightPixels);
     method public int component1();
     method public int component2();
-    method public org.connectbot.terminal.TerminalDimensions copy(optional int rows, optional int columns);
+    method public int component3();
+    method public int component4();
+    method public org.connectbot.terminal.TerminalDimensions copy(int rows, int columns);
+    method public org.connectbot.terminal.TerminalDimensions copy(optional int rows, optional int columns, optional int widthPixels, optional int heightPixels);
     method @InaccessibleFromKotlin public int getColumns();
+    method @InaccessibleFromKotlin public int getHeightPixels();
     method @InaccessibleFromKotlin public int getRows();
+    method @InaccessibleFromKotlin public int getWidthPixels();
     property public int columns;
+    property public int heightPixels;
     property public int rows;
+    property public int widthPixels;
   }
 
   public sealed nonexhaustive interface TerminalEmulator {
@@ -105,16 +214,21 @@ package org.connectbot.terminal {
     method @InaccessibleFromKotlin public boolean getAutoDetectUrls();
     method @InaccessibleFromKotlin public boolean getBoldAsBright();
     method @InaccessibleFromKotlin public org.connectbot.terminal.TerminalDimensions getDimensions();
+    method @InaccessibleFromKotlin public org.connectbot.terminal.InlineImages getInlineImages();
     method public String? getLastCommandOutput();
     method public java.util.List<org.connectbot.terminal.TerminalUrl> getUrls(optional org.connectbot.terminal.UrlScanScope scope);
+    method public void pasteText(String text);
     method public void resize(int newRows, int newCols);
     method public int setAnsiPalette(int[] ansiColors);
+    method public void setCellPixelSize(int width, int height);
     method public int setDefaultColors(int foreground, int background);
+    method public void setInlineImages(org.connectbot.terminal.InlineImages inlineImages);
     method public void writeInput(byte[] data, optional int offset, optional int length);
     method public void writeInput(java.nio.ByteBuffer buffer, int length);
     property public abstract boolean autoDetectUrls;
     property public abstract boolean boldAsBright;
     property public abstract org.connectbot.terminal.TerminalDimensions dimensions;
+    property public abstract org.connectbot.terminal.InlineImages inlineImages;
   }
 
   public final class TerminalEmulatorFactory {
@@ -123,11 +237,11 @@ package org.connectbot.terminal {
   }
 
   public static final class TerminalEmulatorFactory.Companion {
-    method @KotlinOnly public org.connectbot.terminal.TerminalEmulator create(optional android.os.Looper looper, optional int initialRows, optional int initialCols, optional androidx.compose.ui.graphics.Color defaultForeground, optional androidx.compose.ui.graphics.Color defaultBackground, optional kotlin.jvm.functions.Function1<byte[],kotlin.Unit> onKeyboardInput, optional kotlin.jvm.functions.Function0<kotlin.Unit>? onBell, optional kotlin.jvm.functions.Function1<org.connectbot.terminal.TerminalDimensions,kotlin.Unit>? onResize, optional kotlin.jvm.functions.Function1<java.lang.String,kotlin.Unit>? onClipboardCopy, optional kotlin.jvm.functions.Function2<org.connectbot.terminal.ProgressState,java.lang.Integer,kotlin.Unit>? onProgressChange, optional boolean autoDetectUrls, optional boolean boldAsBright);
+    method @KotlinOnly public org.connectbot.terminal.TerminalEmulator create(optional android.os.Looper looper, optional int initialRows, optional int initialCols, optional androidx.compose.ui.graphics.Color defaultForeground, optional androidx.compose.ui.graphics.Color defaultBackground, optional kotlin.jvm.functions.Function1<byte[],kotlin.Unit> onKeyboardInput, optional kotlin.jvm.functions.Function0<kotlin.Unit>? onBell, optional kotlin.jvm.functions.Function1<org.connectbot.terminal.TerminalDimensions,kotlin.Unit>? onResize, optional kotlin.jvm.functions.Function1<java.lang.String,kotlin.Unit>? onClipboardCopy, optional kotlin.jvm.functions.Function2<org.connectbot.terminal.ProgressState,java.lang.Integer,kotlin.Unit>? onProgressChange, optional boolean autoDetectUrls, optional boolean boldAsBright, optional org.connectbot.terminal.InlineImages inlineImages);
   }
 
   public final class TerminalKt {
-    method @KotlinOnly @androidx.compose.runtime.Composable public static void Terminal(org.connectbot.terminal.TerminalEmulator terminalEmulator, optional androidx.compose.ui.Modifier modifier, optional android.graphics.Typeface typeface, optional androidx.compose.ui.unit.TextUnit initialFontSize, optional androidx.compose.ui.unit.TextUnit minFontSize, optional androidx.compose.ui.unit.TextUnit maxFontSize, optional androidx.compose.ui.graphics.Color backgroundColor, optional androidx.compose.ui.graphics.Color foregroundColor, optional androidx.compose.ui.graphics.Color selectionBackgroundColor, optional androidx.compose.ui.graphics.Color selectionForegroundColor, optional boolean keyboardEnabled, optional boolean showSoftKeyboard, optional androidx.compose.ui.focus.FocusRequester focusRequester, optional kotlin.jvm.functions.Function0<kotlin.Unit> onTerminalTap, optional kotlin.jvm.functions.Function1<java.lang.Boolean,kotlin.Unit> onImeVisibilityChanged, optional kotlin.Pair<java.lang.Integer,java.lang.Integer>? forcedSize, optional org.connectbot.terminal.ModifierManager? modifierManager, optional kotlin.jvm.functions.Function1<org.connectbot.terminal.SelectionController,kotlin.Unit>? onSelectionControllerAvailable, optional kotlin.jvm.functions.Function1<java.lang.String,kotlin.Unit> onHyperlinkClick, optional kotlin.jvm.functions.Function1<org.connectbot.terminal.ComposeController,kotlin.Unit>? onComposeControllerAvailable, optional kotlin.jvm.functions.Function0<kotlin.Unit>? onPasteRequest, optional org.connectbot.terminal.RightAltMode rightAltMode, optional org.connectbot.terminal.DelKeyMode delKeyMode, optional kotlin.jvm.functions.Function1<androidx.compose.ui.input.key.KeyEvent,java.lang.Boolean>? onInterceptKey);
+    method @KotlinOnly @androidx.compose.runtime.Composable public static void Terminal(org.connectbot.terminal.TerminalEmulator terminalEmulator, optional androidx.compose.ui.Modifier modifier, optional android.graphics.Typeface typeface, optional androidx.compose.ui.unit.TextUnit initialFontSize, optional androidx.compose.ui.unit.TextUnit minFontSize, optional androidx.compose.ui.unit.TextUnit maxFontSize, optional androidx.compose.ui.graphics.Color backgroundColor, optional androidx.compose.ui.graphics.Color foregroundColor, optional androidx.compose.ui.graphics.Color selectionBackgroundColor, optional androidx.compose.ui.graphics.Color selectionForegroundColor, optional boolean keyboardEnabled, optional boolean showSoftKeyboard, optional androidx.compose.ui.focus.FocusRequester focusRequester, optional kotlin.jvm.functions.Function0<kotlin.Unit> onTerminalTap, optional kotlin.jvm.functions.Function1<java.lang.Boolean,kotlin.Unit> onImeVisibilityChanged, optional kotlin.Pair<java.lang.Integer,java.lang.Integer>? forcedSize, optional org.connectbot.terminal.ModifierManager? modifierManager, optional kotlin.jvm.functions.Function1<org.connectbot.terminal.SelectionController,kotlin.Unit>? onSelectionControllerAvailable, optional kotlin.jvm.functions.Function1<java.lang.String,kotlin.Unit> onHyperlinkClick, optional kotlin.jvm.functions.Function1<org.connectbot.terminal.ComposeController,kotlin.Unit>? onComposeControllerAvailable, optional kotlin.jvm.functions.Function0<kotlin.Unit>? onPasteRequest, optional org.connectbot.terminal.RightAltMode rightAltMode, optional org.connectbot.terminal.DelKeyMode delKeyMode, optional kotlin.jvm.functions.Function1<androidx.compose.ui.input.key.KeyEvent,java.lang.Boolean>? onInterceptKey, optional boolean resizeSuspended);
   }
 
   public final class TerminalUrl {

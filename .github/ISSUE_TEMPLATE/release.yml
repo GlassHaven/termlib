@@ -1,0 +1,47 @@
+name: (Maintainers only) Release
+description: Prepare and publish a library release.
+title: "Release "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This release automation is for maintainers only. Submissions from non-maintainers will be rejected by the workflow.
+
+        After opening this issue:
+        1. Add `release:prepare` to create the release PR.
+        2. Approve that PR and wait for its required CI checks. Leave it open and in draft; do not merge it or mark it ready for review.
+        3. Add `release:publish` to this issue. The action tags the release and advances the target branch.
+        4. Verify the tag-triggered artifact publishing run succeeds, then close this issue.
+  - type: input
+    id: releaseVersion
+    attributes:
+      label: Release version
+      description: Version to publish, without the v tag prefix.
+      placeholder: "0.2.2"
+    validations:
+      required: true
+  - type: input
+    id: nextVersion
+    attributes:
+      label: Next version
+      description: Next development version after the release.
+      placeholder: "0.2.3-SNAPSHOT"
+    validations:
+      required: true
+  - type: input
+    id: targetBranch
+    attributes:
+      label: Target branch
+      description: Branch to release from and fast-forward on publish.
+      placeholder: "main"
+      value: "main"
+    validations:
+      required: true
+  - type: textarea
+    id: releaseNotes
+    attributes:
+      label: Release notes
+      description: Optional text to include in the annotated tag message.
+    validations:
+      required: false

@@ -7,7 +7,7 @@ plugins {
 
 android {
     namespace = "org.connectbot.terminal.testapp"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "org.connectbot.terminal.testapp"
@@ -18,11 +18,17 @@ android {
     }
 
     buildTypes {
+        create("benchmark") {
+            initWith(getByName("release"))
+            signingConfig = signingConfigs.getByName("debug")
+            isDebuggable = false
+            matchingFallbacks += "release"
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
+                "proguard-rules.pro",
             )
         }
     }
@@ -35,6 +41,9 @@ android {
     buildFeatures {
         compose = true
     }
+    sourceSets.getByName("benchmark").assets.directories.add(
+        rootProject.layout.projectDirectory.dir("lib/build/benchmark-assets").asFile.absolutePath,
+    )
 
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.3"
@@ -48,6 +57,7 @@ kotlin {
 }
 
 dependencies {
+    "benchmarkImplementation"("androidx.profileinstaller:profileinstaller:1.4.1")
     implementation(project(":lib"))
 
     implementation(libs.androidx.core.ktx)

@@ -4,7 +4,7 @@ on:
   push:
     branches: [ main ]
     tags:
-      - "*.*.*"
+      - "[0-9]*.[0-9]*.[0-9]*"
   pull_request:
     branches: [ main ]
   schedule:
@@ -14,8 +14,6 @@ on:
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
 
 jobs:
   build:
@@ -24,22 +22,22 @@ jobs:
 
     steps:
       - name: Checkout (with history)
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           fetch-tags: true
 
       - name: Validate Gradle Wrapper
-        uses: gradle/actions/wrapper-validation@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
+        uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
 
       - name: Set up JDK
-        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: 'zulu'
           java-version: '17'
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
         with:
           dependency-graph: generate-and-submit
           cache-encryption-key: ${{ secrets.GRADLE_CACHE_ENCRYPTION_KEY }}
@@ -49,7 +47,7 @@ jobs:
           rm -rf $ANDROID_HOME/cmdline-tools/latest
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
         with:
           cmdline-tools-version: '13114758'
           packages: 'cmdline-tools;latest platform-tools'
@@ -87,22 +85,37 @@ jobs:
             tag.txt
             ConnectBotTerminal-*.aar
 
+      - name: Project version
+        id: project-version
+        run: |
+          grep '^version=' gradle.properties >> "$GITHUB_OUTPUT"
+
       # Publishing is upstream's to do: the coordinates and the signing key
       # belong to connectbot/termlib, and a fork has neither. Without this
-      # guard the step ran on every push to a fork's main and failed on the
+      # guard the steps ran on every push to a fork's main and failed on the
       # missing secret, leaving CI permanently red — which hides a real
       # failure, since a broken build looks identical at a glance. The same
       # guard is already on the `upload` job below.
-      - name: Upload to Sonatype
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'connectbot/termlib'
-        run: |
-          ./gradlew publishToMavenCentral --no-configuration-cache -PmavenCentralUsername=${ORG_GRADLE_PROJECT_mavenCentralUsername} -PmavenCentralPassword=${ORG_GRADLE_PROJECT_mavenCentralPassword}
+      - name: Publish snapshot to Sonatype
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && endsWith(steps.project-version.outputs.version, '-SNAPSHOT') && github.repository == 'connectbot/termlib'
+        run: ./gradlew publishToMavenCentral --no-configuration-cache -PmavenCentralUsername=${ORG_GRADLE_PROJECT_mavenCentralUsername} -PmavenCentralPassword=${ORG_GRADLE_PROJECT_mavenCentralPassword}
         env:
           ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
           ORG_GRADLE_PROJECT_signingInMemoryKeyId: ${{ secrets.MAVEN_GPG_KEYID }}
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
           ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.SONATYPE_USERNAME }}
           ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.SONATYPE_PASSWORD }}
+
+      - name: Publish release to Sonatype
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.repository == 'connectbot/termlib'
+        run: ./gradlew publishToMavenCentral --no-configuration-cache -PmavenCentralUsername=${ORG_GRADLE_PROJECT_mavenCentralUsername} -PmavenCentralPassword=${ORG_GRADLE_PROJECT_mavenCentralPassword}
+        env:
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyId: ${{ secrets.MAVEN_GPG_KEYID }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.SONATYPE_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.SONATYPE_PASSWORD }}
+
 
   upload:
     name: Upload to GitHub releases
@@ -123,7 +136,7 @@ jobs:
           echo "GITHUB_TAG=$(cat tag.txt)" >> "$GITHUB_OUTPUT"
 
       - name: Upload release
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           body: "Untested build"
           draft: true
@@ -132,87 +145,3 @@ jobs:
           generate_release_notes: true
           files: |
             ConnectBotTerminal-*.aar
-
-  docs:
-    name: Publish docs to GitHub Pages
-    needs: build
-    # Same reasoning as the Sonatype step: these are upstream's docs and
-    # upstream's Pages site. Until now this job was only ever skipped because
-    # `build` failed first, so fixing that would have moved the red here
-    # rather than removing it.
-    if: ${{ (github.event_name == 'push') && (github.repository == 'connectbot/termlib') && ((github.ref == 'refs/heads/main') || startsWith(github.ref, 'refs/tags/')) }}
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-
-    steps:
-      - name: Checkout (with history)
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          fetch-depth: 0
-          fetch-tags: true
-
-      - name: Set up JDK
-        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
-        with:
-          distribution: 'zulu'
-          java-version: '17'
-
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
-        with:
-          cache-encryption-key: ${{ secrets.GRADLE_CACHE_ENCRYPTION_KEY }}
-
-      - name: Delete old Android SDK cmdline-tools
-        run: |
-          rm -rf $ANDROID_HOME/cmdline-tools/latest
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
-        with:
-          cmdline-tools-version: '13114758'
-          packages: 'cmdline-tools;latest platform-tools'
-
-      - name: Build documents
-        run: ./gradlew :lib:dokkaGeneratePublicationHtml :lib:dokkaGenerateMarkdown --no-configuration-cache
-
-      - name: Determine subdirectory name
-        id: subdir
-        run: |
-          echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-
-      - name: Download existing GitHub Pages content
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: gh-pages
-          path: gh-pages
-        continue-on-error: true
-
-      - name: Setup Pages
-        id: pages
-        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
-
-      - name: Prepare docs for deployment
-        run: |
-          mkdir -p gh-pages-deploy
-          if [ -d "gh-pages" ]; then
-            cp -r gh-pages/* gh-pages-deploy/ 2>/dev/null || true
-          fi
-          SUBDIR="${{ steps.subdir.outputs.name }}"
-          rm -rf "gh-pages-deploy/${SUBDIR}"
-          mkdir -p "gh-pages-deploy/${SUBDIR}"
-          cp -r ./lib/build/dokka/markdown/* "gh-pages-deploy/${SUBDIR}/"
-          cp -r ./lib/build/dokka/html/* "gh-pages-deploy/${SUBDIR}/"
-          .github/scripts/generate-version-sitemap.sh gh-pages-deploy "${SUBDIR}" "${{ steps.pages.outputs.base_url }}"
-          .github/scripts/generate-sitemap-index.sh gh-pages-deploy "${{ steps.pages.outputs.base_url }}"
-          .github/scripts/generate-index.sh gh-pages-deploy "${{ steps.pages.outputs.base_url }}"
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
-        with:
-          path: gh-pages-deploy
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
