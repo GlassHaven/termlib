@@ -116,6 +116,7 @@ import androidx.compose.ui.semantics.scrollBy
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.verticalScrollAxisRange
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -362,6 +363,26 @@ private val COPY_BUTTON_SIZE = 48.dp
  * Vertical offset for the copy button above the selection in dp.
  */
 private val COPY_BUTTON_OFFSET = 48.dp
+
+/**
+ * Total width of the floating Copy / more-options / Paste pill row shown
+ * while a selection is active: a Paste pill rides along when a paste
+ * handler is attached, adding one pill and one 8dp gap (#661).
+ */
+internal fun selectionOverlayRowWidth(hasPaste: Boolean): Dp =
+    if (hasPaste) {
+        COPY_BUTTON_SIZE * 3 + 8.dp * 2
+    } else {
+        COPY_BUTTON_SIZE * 2 + 8.dp
+    }
+
+/**
+ * Clamp the pill row's left edge so the whole row stays inside the
+ * viewport: retract by the full row width when the selection end sits near
+ * the right edge, and never go negative on narrow viewports (#661).
+ */
+internal fun clampSelectionOverlayX(rawX: Float, rowWidthPx: Float, availableWidth: Float): Float =
+    rawX.coerceAtMost(availableWidth - rowWidthPx).coerceAtLeast(0f)
 
 /**
  * Touch radius in pixels for detecting selection handle touches.
@@ -2907,10 +2928,14 @@ internal fun TerminalWithAccessibility(
             val range = selectionManager.selectionRange
             if (range != null) {
                 val endPosition = range.getEndPosition()
-                val buttonRowWidthPx = with(density) { (COPY_BUTTON_SIZE * 2 + 8.dp).toPx() }
-                val buttonX = (endPosition.second * baseCharWidth)
-                    .coerceAtMost(availableWidth - buttonRowWidthPx)
-                    .coerceAtLeast(0f)
+                val buttonRowWidthPx = with(density) {
+                    selectionOverlayRowWidth(hasPaste = onPasteRequest != null).toPx()
+                }
+                val buttonX = clampSelectionOverlayX(
+                    rawX = endPosition.second * baseCharWidth,
+                    rowWidthPx = buttonRowWidthPx,
+                    availableWidth = availableWidth.toFloat(),
+                )
                 // Button is laid out in the parent Box (viewport coords), but the
                 // selection itself is rendered shifted up by keyboardCoveredPx
                 // inside the Canvas (#206). Apply the same shift so the button
@@ -3054,7 +3079,7 @@ internal fun TerminalWithAccessibility(
                             containerColor = Color.White,
                             contentColor = Color.Black,
                         ) {
-                            Text("Paste", style = MaterialTheme.typography.labelSmall)
+                            Text(stringResource(R.string.terminal_selection_paste), style = MaterialTheme.typography.labelSmall)
                         }
                     }
                 }
