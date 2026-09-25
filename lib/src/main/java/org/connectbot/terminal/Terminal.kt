@@ -385,6 +385,16 @@ internal fun clampSelectionOverlayX(rawX: Float, rowWidthPx: Float, availableWid
     rawX.coerceAtMost(availableWidth - rowWidthPx).coerceAtLeast(0f)
 
 /**
+ * Clamp the pill row's top edge so it stays inside the viewport vertically.
+ * The menu hovers above the selection's visually-last cell; after a
+ * multi-screen edge-zone drag that cell sits far below the viewport (the
+ * start anchor shifts one row per autoscroll step), and the raw Y was an
+ * unbounded positive number that rendered the whole row off-screen.
+ */
+internal fun clampSelectionOverlayY(rawY: Float, buttonHeightPx: Float, availableHeight: Float): Float =
+    rawY.coerceAtLeast(0f).coerceAtMost(maxOf(0f, availableHeight - buttonHeightPx))
+
+/**
  * Touch radius in pixels for detecting selection handle touches.
  */
 private const val HANDLE_HIT_RADIUS = 80f
@@ -2940,10 +2950,17 @@ internal fun TerminalWithAccessibility(
                 // selection itself is rendered shifted up by keyboardCoveredPx
                 // inside the Canvas (#206). Apply the same shift so the button
                 // sits above the visible selection-end row, not below the
-                // keyboard.
-                val buttonY = endPosition.first * baseCharHeight -
-                    keyboardCoveredPx -
-                    with(density) { COPY_BUTTON_OFFSET.toPx() }
+                // keyboard. The raw Y is unbounded — a multi-screen edge-zone
+                // drag leaves the visually-last selection row far below the
+                // viewport — so the result is clamped into the box like the X
+                // position above.
+                val buttonY = clampSelectionOverlayY(
+                    rawY = endPosition.first * baseCharHeight -
+                        keyboardCoveredPx -
+                        with(density) { COPY_BUTTON_OFFSET.toPx() },
+                    buttonHeightPx = with(density) { COPY_BUTTON_SIZE.toPx() },
+                    availableHeight = availableHeight.toFloat(),
+                )
                 val context = LocalContext.current
                 var overflowMenuExpanded by remember { mutableStateOf(false) }
 
@@ -2951,7 +2968,7 @@ internal fun TerminalWithAccessibility(
                     modifier = Modifier
                         .offset(
                             x = with(density) { buttonX.toDp() },
-                            y = with(density) { buttonY.coerceAtLeast(0f).toDp() },
+                            y = with(density) { buttonY.toDp() },
                         ),
                 ) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

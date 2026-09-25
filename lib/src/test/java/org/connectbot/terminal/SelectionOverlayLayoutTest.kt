@@ -62,4 +62,42 @@ class SelectionOverlayLayoutTest {
         val clamped = clampSelectionOverlayX(rawX = 10f, rowWidthPx = 320f, availableWidth = 200f)
         assertEquals(0f, clamped, 0.001f)
     }
+
+    @Test
+    fun clampY_pullsOffBottomAnchorBackInsideTheViewport() {
+        // Multi-screen drag-select (long-press low, drag up through the top
+        // edge zone): autoscroll shifts the START anchor one row per scroll
+        // step, so the selection's visually-last cell ends up ~2 screens
+        // below the viewport. The raw Y is a huge positive number and the
+        // pill row rendered entirely off-screen (maintainer repro
+        // 2026-09-25); the clamp must retract it by the pill height.
+        val clamped = clampSelectionOverlayY(
+            rawY = 2400f,
+            buttonHeightPx = 128f,
+            availableHeight = 2000f,
+        )
+        assertEquals(2000f - 128f, clamped, 0.001f)
+    }
+
+    @Test
+    fun clampY_keepsInViewportAnchorAtItsPosition() {
+        val clamped = clampSelectionOverlayY(rawY = 300f, buttonHeightPx = 128f, availableHeight = 2000f)
+        assertEquals(300f, clamped, 0.001f)
+    }
+
+    @Test
+    fun clampY_neverGoesNegativeAboveTheTopEdge() {
+        // A selection ending on row 0 puts the raw Y at -48dp-offset (minus
+        // any keyboard shift); the menu pins to the top edge instead.
+        val clamped = clampSelectionOverlayY(rawY = -50f, buttonHeightPx = 128f, availableHeight = 2000f)
+        assertEquals(0f, clamped, 0.001f)
+    }
+
+    @Test
+    fun clampY_tinyViewportNeverThrows() {
+        // A coerceIn(min, max) formulation throws when min > max; the clamp
+        // must degenerate to the top edge on viewports shorter than the pill.
+        val clamped = clampSelectionOverlayY(rawY = 100f, buttonHeightPx = 128f, availableHeight = 50f)
+        assertEquals(0f, clamped, 0.001f)
+    }
 }
