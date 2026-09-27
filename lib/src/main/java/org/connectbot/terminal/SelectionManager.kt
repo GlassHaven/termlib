@@ -210,6 +210,11 @@ internal class SelectionManager {
     var isSelecting by mutableStateOf(false)
         private set
 
+    /** Restores a prior range — the touch wobble filter rolls back to this at lift. */
+    internal fun restoreSelectionRange(range: SelectionRange) {
+        selectionRange = range
+    }
+
     fun startSelection(
         row: Int,
         col: Int,

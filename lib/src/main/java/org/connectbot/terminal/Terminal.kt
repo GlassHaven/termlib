@@ -88,6 +88,7 @@ import androidx.compose.ui.input.pointer.PointerEvent
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.PointerInputChange
+import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.input.pointer.positionChange
@@ -433,6 +434,19 @@ private const val MAGNIFIER_ROW_RANGE = 3
  * Width of selection handles (teardrop shape) in dp.
  */
 private val SELECTION_HANDLE_WIDTH = 24.dp
+
+/**
+ * Case-edge clearance for selection: finger travel inside this distance of
+ * the screen edge maps onto the outermost cell (ported from upstream
+ * 6209b978).
+ */
+private val SELECTION_EDGE_INSET = 48.dp
+
+/**
+ * Width of the edge band over which finger coordinates are scaled toward the
+ * screen edge, so first/last rows and columns stay reachable.
+ */
+private val SELECTION_EDGE_TRANSITION = 192.dp
 
 /**
  * Alpha value for the block cursor.
@@ -1807,6 +1821,25 @@ internal fun TerminalWithAccessibility(
                             var gestureType: GestureType = GestureType.Undetermined
                             val down = awaitFirstDown(requireUnconsumed = false)
 
+                            // Touch-sampling helpers (ported from upstream 6209b978):
+                            // edge-reach keeps the outermost cells selectable without
+                            // the finger center on the bezel, and the release filter
+                            // rolls back the wild coordinates a finger produces in the
+                            // last moments before lifting.
+                            val isFinger = down.type == PointerType.Touch
+                            val releaseFilter = SelectionReleaseFilter<SelectionRange>()
+                            var selectionReleaseTime = down.uptimeMillis
+                            fun selectionPoint(raw: Offset): Offset {
+                                if (!isFinger) return raw
+                                return edgeReachPosition(
+                                    raw,
+                                    size.width.toFloat(),
+                                    size.height.toFloat(),
+                                    with(density) { SELECTION_EDGE_INSET.toPx() },
+                                    with(density) { SELECTION_EDGE_TRANSITION.toPx() },
+                                )
+                            }
+
                             // Suppress taps/swipes for a window after pinch-to-zoom ends
                             val sincePinch = System.currentTimeMillis() - lastMultiTouchTime
                             val inPinchCooldown = sincePinch < MULTITOUCH_LIFTOFF_MS
@@ -1829,6 +1862,16 @@ internal fun TerminalWithAccessibility(
                                         magnifierPosition = down.position
                                         handleDragActive = true
 
+                                        // Wobble filter (ported from upstream 6209b978):
+                                        // samples distinct ranges as the handle moves so a
+                                        // burst of wild coordinates right before lift can be
+                                        // rolled back to the last settled one.
+                                        val handleFilter = SelectionReleaseFilter<SelectionRange>()
+                                        selectionManager.selectionRange?.let {
+                                            handleFilter.record(it, down.uptimeMillis)
+                                        }
+                                        var handleReleaseTime = down.uptimeMillis
+
                                         // Local variable to keep track of which handle we are moving in case they cross
                                         var isMovingStart = touchingStart
                                         // Latest pointer position, fed to the
@@ -1839,11 +1882,28 @@ internal fun TerminalWithAccessibility(
                                         // pointer position. Shared by the drag loop and
                                         // the edge-scroll ticker.
                                         fun applyHandleAt(pos: Offset) {
+                                            // Map finger travel onto both viewport edges so a
+                                            // handle grabbed near the screen edge still reaches
+                                            // the outermost cells (ported from upstream
+                                            // 6209b978). Anchor = the grab point, so the handle
+                                            // does not jump on grab.
+                                            val mapped = if (isFinger) {
+                                                selectionHandleDragPosition(
+                                                    pos,
+                                                    down.position,
+                                                    down.position,
+                                                    size.width.toFloat(),
+                                                    size.height.toFloat(),
+                                                    with(density) { SELECTION_EDGE_INSET.toPx() },
+                                                )
+                                            } else {
+                                                pos
+                                            }
                                             val newCol =
-                                                (pos.x / baseCharWidth).toInt()
+                                                (mapped.x / baseCharWidth).toInt()
                                                     .coerceIn(0, screenState.snapshot.cols - 1)
                                             val newRow =
-                                                ((pos.y + keyboardCoveredPx) / baseCharHeight).toInt()
+                                                ((mapped.y + keyboardCoveredPx) / baseCharHeight).toInt()
                                                     .coerceIn(0, screenState.snapshot.rows - 1)
 
                                             val current = selectionManager.selectionRange
@@ -1914,7 +1974,11 @@ internal fun TerminalWithAccessibility(
                                         try {
                                             drag(down.id) { change ->
                                                 handleDragPosition = change.position
+                                                handleReleaseTime = change.uptimeMillis
                                                 applyHandleAt(change.position)
+                                                selectionManager.selectionRange?.let {
+                                                    handleFilter.record(it, change.uptimeMillis)
+                                                }
                                                 magnifierPosition = change.position
                                                 change.consume()
                                             }
@@ -1922,6 +1986,12 @@ internal fun TerminalWithAccessibility(
                                             handleEdgeScrollJob.cancel()
                                             handleDragActive = false
                                         }
+
+                                        // Roll back a pre-release touch wobble to the last
+                                        // settled selection before the drag commits (ported
+                                        // from upstream 6209b978).
+                                        handleFilter.resultAtRelease(handleReleaseTime)
+                                            ?.let(selectionManager::restoreSelectionRange)
 
                                         // After lifting finger, ensure selection is fully adjusted and handles snap
                                         selectionManager.adjustSelectionForMode(
@@ -2021,10 +2091,14 @@ internal fun TerminalWithAccessibility(
                                     gestureType = GestureType.Selection
                                     logGesture("selection-started")
 
-                                    // Start selection
-                                    val col = (down.position.x / baseCharWidth).toInt()
+                                    // Start selection. The anchor cell uses the
+                                    // edge-reach-mapped point so a selection can begin on the
+                                    // first/last column or row (ported from upstream 6209b978);
+                                    // the magnifier stays on the raw finger position.
+                                    val startTarget = selectionPoint(down.position)
+                                    val col = (startTarget.x / baseCharWidth).toInt()
                                         .coerceIn(0, screenState.snapshot.cols - 1)
-                                    val row = ((down.position.y + keyboardCoveredPx) / baseCharHeight).toInt()
+                                    val row = ((startTarget.y + keyboardCoveredPx) / baseCharHeight).toInt()
                                         .coerceIn(0, screenState.snapshot.rows - 1)
                                     selectionManager.startSelection(
                                         row,
@@ -2032,6 +2106,12 @@ internal fun TerminalWithAccessibility(
                                         screenState.snapshot.cols,
                                         SelectionMode.CHARACTER,
                                     )
+                                    selectionManager.selectionRange?.let {
+                                        releaseFilter.record(
+                                            it,
+                                            down.uptimeMillis + viewConfiguration.longPressTimeoutMillis,
+                                        )
+                                    }
                                     hostView.performHapticFeedback(
                                         android.view.HapticFeedbackConstants.LONG_PRESS,
                                     )
@@ -2192,6 +2272,15 @@ internal fun TerminalWithAccessibility(
                                     when (gestureType) {
                                         GestureType.Selection -> {
                                             if (!selectionManager.isSelecting) continue
+                                            // Edge-reach-mapped cell so a finger held still
+                                            // inside the edge band extends the selection to the
+                                            // outermost row/column (ported from upstream
+                                            // 6209b978).
+                                            val selTarget = selectionPoint(lastDragPosition)
+                                            val selCol = (selTarget.x / baseCharWidth).toInt()
+                                                .coerceIn(0, screenState.snapshot.cols - 1)
+                                            val selRow = ((selTarget.y + keyboardCoveredPx) / baseCharHeight).toInt()
+                                                .coerceIn(0, screenState.snapshot.rows - 1)
                                             val dir = edgeScrollDirection(
                                                 lastDragPosition.y,
                                                 viewportH,
@@ -2203,7 +2292,7 @@ internal fun TerminalWithAccessibility(
                                             // native selections scroll our own viewport and
                                             // shift the start anchor in lockstep.
                                             val handled = gestureCallback
-                                                ?.onScroll(dragCol, dragRow, dir == EdgeScroll.UP)
+                                                ?.onScroll(selCol, selRow, dir == EdgeScroll.UP)
                                                 ?: false
                                             if (!handled) {
                                                 val rows = edgeScrollRowsPerTick(
@@ -2218,7 +2307,7 @@ internal fun TerminalWithAccessibility(
                                                     screenState.scrollbackPosition * baseCharHeight,
                                                 )
                                             }
-                                            selectionManager.updateSelection(dragRow, dragCol)
+                                            selectionManager.updateSelection(selRow, selCol)
                                         }
 
                                         GestureType.MouseDrag -> {
@@ -2348,11 +2437,15 @@ internal fun TerminalWithAccessibility(
                                 when (gestureType) {
                                     GestureType.Selection -> {
                                         if (selectionManager.isSelecting) {
+                                            // Edge-reach-mapped cell so the drag reaches the
+                                            // outermost columns/rows without the finger center
+                                            // on the bezel (ported from upstream 6209b978).
+                                            val dragTarget = selectionPoint(change.position)
                                             val dragCol =
-                                                (change.position.x / baseCharWidth).toInt()
+                                                (dragTarget.x / baseCharWidth).toInt()
                                                     .coerceIn(0, screenState.snapshot.cols - 1)
                                             val dragRow =
-                                                ((change.position.y + keyboardCoveredPx) / baseCharHeight).toInt()
+                                                ((dragTarget.y + keyboardCoveredPx) / baseCharHeight).toInt()
                                                     .coerceIn(0, screenState.snapshot.rows - 1)
 
                                             // Edge-zone extension. Two paths:
@@ -2400,6 +2493,10 @@ internal fun TerminalWithAccessibility(
                                                 dragRow,
                                                 dragCol,
                                             )
+                                            selectionReleaseTime = change.uptimeMillis
+                                            selectionManager.selectionRange?.let {
+                                                releaseFilter.record(it, change.uptimeMillis)
+                                            }
                                             magnifierPosition = change.position
                                         }
                                     }
@@ -2578,6 +2675,12 @@ internal fun TerminalWithAccessibility(
                                 GestureType.Selection -> {
                                     showMagnifier = false
                                     if (selectionManager.isSelecting) {
+                                        // Roll back a pre-release touch wobble to the last
+                                        // settled selection (ported from upstream 6209b978).
+                                        if (isFinger) {
+                                            releaseFilter.resultAtRelease(selectionReleaseTime)
+                                                ?.let(selectionManager::restoreSelectionRange)
+                                        }
                                         selectionManager.endSelection()
                                     }
                                 }
