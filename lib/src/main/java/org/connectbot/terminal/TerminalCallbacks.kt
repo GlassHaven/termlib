@@ -124,6 +124,14 @@ internal interface TerminalCallbacks {
      * @return 1 if handled, 0 otherwise
      */
     fun onOscSequence(command: Int, payload: String, cursorRow: Int, cursorCol: Int): Int
+
+    /** Binary image transport. Result packs cursor rows/columns and reservation policy. */
+    fun onImageFragment(kitty: Boolean, data: ByteArray, initial: Boolean, final: Boolean, row: Int, col: Int): Long = -1
+
+    /** Exact edits (0), scrolling (1), and full-screen image clearing (2). */
+    fun onImageEdit(kind: Int, top: Int, bottom: Int, left: Int, right: Int, downward: Int, rightward: Int) = Unit
+
+    fun onImageQuery(query: Int) = Unit
 }
 
 /**

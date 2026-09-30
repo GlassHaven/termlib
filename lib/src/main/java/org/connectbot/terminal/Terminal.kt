@@ -65,6 +65,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -127,6 +128,7 @@ import androidx.core.view.WindowInsetsCompat
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlin.math.ceil
@@ -936,6 +938,44 @@ internal fun TerminalWithAccessibility(
 
     val baseCharBaseline = remember(textPaint) {
         ceil(-textPaint.fontMetrics.ascent)
+    }
+
+    // Inline images (#583): image placement is measured in cell pixels, so the
+    // emulator needs the real cell size before it can place anything.
+    LaunchedEffect(terminalEmulator, baseCharWidth, baseCharHeight) {
+        terminalEmulator.setCellPixelSize(
+            ceil(baseCharWidth).toInt().coerceAtLeast(1),
+            baseCharHeight.toInt().coerceAtLeast(1),
+        )
+    }
+    // Keep the image store's viewport in sync with what is on screen; when an
+    // animated image needs frames, pump one update per display frame.
+    LaunchedEffect(terminalEmulator, baseCharWidth, baseCharHeight) {
+        val store = terminalEmulator.imageStore
+        snapshotFlow { Triple(screenState.snapshot, screenState.scrollbackPosition, store.frameUpdatesNeeded) }
+            .collectLatest { (_, _, needsFrames) ->
+                val slices = (0 until screenState.snapshot.rows).flatMap { screenState.getVisibleLine(it).images }
+                store.updateViewport(
+                    ImageViewport(-screenState.scrollbackPosition, slices, baseCharWidth, baseCharHeight, SystemClock.uptimeMillis()),
+                )
+                if (slices.isEmpty() || !needsFrames) return@collectLatest
+                while (true) {
+                    // Also yield with synthetic/immediate clocks; a static image goes idle
+                    // as soon as maintenance publishes that its decode has completed.
+                    delay(1)
+                    withFrameNanos { frameTime ->
+                        store.updateViewport(
+                            ImageViewport(-screenState.scrollbackPosition, slices, baseCharWidth, baseCharHeight, frameTime / 1_000_000L),
+                        )
+                    }
+                }
+            }
+    }
+    DisposableEffect(terminalEmulator) {
+        onDispose {
+            val store = terminalEmulator.imageStore
+            store.updateViewport(ImageViewport(0, emptyList(), 1f, 1f, 0, attached = false))
+        }
     }
 
     // The gesture handler below is pointerInput(terminalEmulator, gestureCallback),
@@ -3285,8 +3325,47 @@ private fun DrawScope.drawLine(
     selectionForegroundColor: Color = Color.Black,
 ) {
     val y = row * charHeight
+
+    // Inline images (#583): placements layered below the default background
+    // show through rows whose cells keep the default background, and their
+    // portions under cells carrying their own colour are covered row by row
+    // in the background pass below. Splitting background rectangles from the
+    // text pass also gives the over-background band a clean slot between
+    // them, matching the two-pass raster upstream uses.
+    val behindBackground = line.images.filter { it.z < -1_073_741_824 }
+    behindBackground.forEach { it.draw(drawContext.canvas.nativeCanvas, row, charWidth, charHeight) }
+
     var x = 0f
 
+    // Background rectangles
+    line.cells.forEachIndexed { col, cell ->
+        val cellWidth = charWidth * cell.width
+
+        // Check if this cell is selected
+        val isSelected = selectionManager.isCellSelected(row, col, line)
+
+        // Determine background colors (handle reverse video and selection)
+        val bgColor = if (cell.reverse) cell.fgColor else cell.bgColor
+
+        // Draw background (with selection highlight)
+        val finalBgColor = if (isSelected) selectionBackgroundColor else bgColor
+        if (finalBgColor != defaultBg || isSelected) {
+            drawRect(
+                color = finalBgColor,
+                topLeft = Offset(x, y),
+                size = Size(cellWidth, charHeight),
+            )
+        }
+
+        x += cellWidth
+    }
+
+    // Inline images drawn above the background rectangles but below the text
+    line.images.filter { it.z in -1_073_741_824 until 0 }.forEach {
+        it.draw(drawContext.canvas.nativeCanvas, row, charWidth, charHeight)
+    }
+
+    // Text
     line.cells.forEachIndexed { col, cell ->
         val cellWidth = charWidth * cell.width
 
@@ -3302,20 +3381,9 @@ private fun DrawScope.drawLine(
 
         // Determine colors (handle reverse video and selection)
         val baseFgColor = if (cell.reverse) cell.bgColor else cell.fgColor
-        val bgColor = if (cell.reverse) cell.fgColor else cell.bgColor
-
-        // Draw background (with selection highlight)
-        val finalBgColor = if (isSelected) selectionBackgroundColor else bgColor
-        if (finalBgColor != defaultBg || isSelected) {
-            drawRect(
-                color = finalBgColor,
-                topLeft = Offset(x, y),
-                size = Size(cellWidth, charHeight),
-            )
-        }
 
         // Draw character
-        if (cell.char != ' ' || cell.combiningChars.isNotEmpty()) {
+        if ((cell.char != ' ' || cell.combiningChars.isNotEmpty()) && !cell.isImagePlaceholder) {
             val text = buildString {
                 append(cell.char)
                 cell.combiningChars.forEach { append(it) }
@@ -3364,6 +3432,9 @@ private fun DrawScope.drawLine(
 
         x += cellWidth
     }
+
+    // Inline images drawn above the text pass
+    line.images.filter { it.z >= 0 }.forEach { it.draw(drawContext.canvas.nativeCanvas, row, charWidth, charHeight) }
 }
 
 /**

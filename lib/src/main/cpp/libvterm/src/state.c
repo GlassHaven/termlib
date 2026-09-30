@@ -202,6 +202,28 @@ static void grow_combine_buffer(VTermState *state)
   state->combine_chars_size = new_size;
 }
 
+void vterm_state_place_image(VTermState *state, int rows, int cols, int reserve)
+{
+  VTermPos oldpos = state->pos;
+  int left = state->pos.col;
+  for(int row = 0; row < rows; row++) {
+    if(row > 0 || !reserve)
+      linefeed(state);
+    if(reserve) {
+      VTermRect rect = {state->pos.row, state->pos.row + 1, left,
+        left + cols < state->cols ? left + cols : state->cols};
+      erase(state, rect, 0);
+    }
+  }
+  state->pos.col = left + cols < state->cols ? left + cols : state->cols - 1;
+  /* This fork has no combine_valid: a pending combine is tracked purely by
+   * position equality (on_text). Invalidate the pending run the same way
+   * upstream's place_image does, so a combining char that follows an image
+   * placement cannot merge into the glyph before it. */
+  state->combine_pos.row = -1;
+  updatecursor(state, &oldpos, 1);
+}
+
 static void set_col_tabstop(VTermState *state, int col)
 {
   unsigned char mask = 1 << (col & 7);
@@ -2080,7 +2102,15 @@ static int on_resize(int rows, int cols, void *user)
   return 1;
 }
 
+static void on_cancel(void *user)
+{
+  VTermState *state = user;
+  if(state->fallbacks && state->fallbacks->control)
+    state->fallbacks->control(0x18, state->fbdata);
+}
+
 static const VTermParserCallbacks parser_callbacks = {
+  .cancel  = on_cancel,
   .text    = on_text,
   .control = on_control,
   .escape  = on_escape,

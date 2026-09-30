@@ -92,6 +92,32 @@ private:
     // libvterm state fallback for OSC sequences. Same no-synchronous-reentry
     // rule as screen callbacks.
     static int termOscFallback(int command, VTermStringFragment frag, void* user);
+    static int termApcFallback(VTermStringFragment frag, void* user);
+    static int termCsiFallback(const char* leader, const long args[], int argcount, const char* intermed, char command, void* user);
+    static int termControlFallback(unsigned char control, void* user);
+    static int termImageResize(int buffer, int delta, int rows, int cols, void* user);
+    static int termImageEdit(VTermRect rect, void* user);
+    static int termImageScroll(VTermRect rect, int downward, int rightward, void* user);
+    static int termImageClear(void* user);
+
+    // Inline-image surface (#583). imageEdit runs under mLock; mReservingImage
+    // suppresses the non-scroll callbacks emitted by the reservation itself.
+    int imageEdit(int kind, VTermRect rect, int downward = 0, int rightward = 0);
+    jlong imageFragment(bool kitty, VTermStringFragment frag);
+    bool mReservingImage = false;
+    bool mImageTracking = false;
+    bool mOsc1337Image = false;
+    jmethodID mImageFragmentMethod{};
+    jmethodID mImageEditMethod{};
+    jmethodID mImageQueryMethod{};
+
+    void beginCursorBatch();
+    void finishCursorBatch();
+    bool mCursorBatchActive = false;
+    bool mCursorPending = false;
+    VTermPos mCursorPosition{0, 0};
+    VTermPos mCursorOldPosition{0, 0};
+    bool mCursorVisible = false;
 
     // libvterm selection callbacks for OSC 52 clipboard. Same no-synchronous-
     // reentry rule as screen callbacks.
@@ -168,6 +194,8 @@ private:
     jfieldID mDhlField;
     jfieldID mCharsField;
     jfieldID mRunLengthField;
+    jfieldID mImageIdField;
+    jfieldID mPlacementIdField;
 
     // Cached Java classes and methods for callbacks (avoid FindClass/GetMethodID overhead)
     jclass mTermRectClass;

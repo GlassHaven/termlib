@@ -52,11 +52,19 @@ internal class CellRun {
     // Number of cells this run covers (not necessarily chars.size due to wide chars)
     var runLength: Int = 0
 
+    // Inline image metadata (#583): set when this run is an isolated Kitty
+    // unicode-placeholder cell — image id from chars[14] and the placement id
+    // from the raw foreground colour. 0 for ordinary runs.
+    var imageId: Int = 0
+    var placementId: Int = 0
+
     /**
      * Reset this cell run for reuse.
      */
     fun reset() {
         runLength = 0
+        imageId = 0
+        placementId = 0
         bold = false
         underline = 0
         italic = false

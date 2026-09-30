@@ -28,6 +28,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.nio.ByteBuffer
+import kotlin.coroutines.Continuation
+import kotlin.coroutines.EmptyCoroutineContext
+import kotlin.coroutines.startCoroutine
 
 /**
  * URL discovered in terminal output.
@@ -288,6 +291,15 @@ sealed interface TerminalEmulator : AutoCloseable {
      * at the tap row.
      */
     fun tapToPositionCursorOnPrompt(tapRow: Int, tapCol: Int): Boolean
+
+    /** Policy controlling whether incoming inline image commands are accepted. */
+    val inlineImages: InlineImages
+
+    /** Changing policy cancels in-progress and pending image uploads. */
+    fun setInlineImages(inlineImages: InlineImages)
+
+    /** Physical cell dimensions used by image placement; defaults to 8 by 16 pixels. */
+    fun setCellPixelSize(width: Int, height: Int)
 }
 
 /**
@@ -368,6 +380,7 @@ class TerminalEmulatorFactory {
             autoDetectUrls: Boolean = false,
             boldAsBright: Boolean = true,
             maxScrollbackLines: Int = 1000,
+            inlineImages: InlineImages = InlineImages.Off,
         ): TerminalEmulator = TerminalEmulatorImpl(
             looper = looper,
             initialRows = initialRows,
@@ -383,6 +396,7 @@ class TerminalEmulatorFactory {
             autoDetectUrls = autoDetectUrls,
             boldAsBright = boldAsBright,
             maxScrollbackLines = maxScrollbackLines,
+            inlineImages = inlineImages,
         )
     }
 }
@@ -432,6 +446,7 @@ internal class TerminalEmulatorImpl(
     override val autoDetectUrls: Boolean = false,
     override val boldAsBright: Boolean = true,
     maxScrollbackLines: Int = 1000,
+    inlineImages: InlineImages = InlineImages.Off,
 ) : TerminalEmulator,
     TerminalCallbacks {
 
@@ -439,6 +454,44 @@ internal class TerminalEmulatorImpl(
     private val handler = Handler(looper)
 
     override var backfillScrollbackOnGrow: Boolean = true
+
+    override fun setCellPixelSize(width: Int, height: Int): Unit = synchronized(damageLock) {
+        require(width > 0 && height > 0)
+        imageStore.updateCellSize(width, height)
+        propertyChanged = true
+        requestProcessPendingUpdatesLocked()
+    }
+
+    override fun onImageFragment(kitty: Boolean, data: ByteArray, initial: Boolean, final: Boolean, row: Int, col: Int): Long = synchronized(damageLock) {
+        val result = synchronized(imageStore) {
+            imageProtocol.accept(kitty, data, initial, final, row, col)
+        }
+        propertyChanged = true
+        requestProcessPendingUpdatesLocked()
+        result
+    }
+
+    override fun onImageEdit(kind: Int, top: Int, bottom: Int, left: Int, right: Int, downward: Int, rightward: Int) {
+        synchronized(damageLock) {
+            when (kind) {
+                0 -> imageStore.edit(TermRect(top, bottom, left, right))
+                1 -> imageStore.scroll(TermRect(top, bottom, left, right), downward, rightward)
+                2 -> imageStore.clearScreen()
+                3 -> imageStore.resizeImages(top != 0, downward, bottom, left)
+                4 -> imageProtocol.reset()
+            }
+        }
+    }
+
+    override fun onImageQuery(query: Int) {
+        val response = when (query) {
+            14 -> "\u001b[4;${imageStore.rows.toLong() * imageStore.cellHeight};${imageStore.cols.toLong() * imageStore.cellWidth}t"
+            16 -> "\u001b[6;${imageStore.cellHeight};${imageStore.cellWidth}t"
+            18 -> "\u001b[8;${imageStore.rows};${imageStore.cols}t"
+            else -> return
+        }
+        handler.post { onKeyboardInput.invoke(response.toByteArray(Charsets.US_ASCII)) }
+    }
 
     // Default colors (can be updated via setDefaultColors)
     private var currentDefaultForeground: Color = defaultForeground
@@ -450,6 +503,69 @@ internal class TerminalEmulatorImpl(
     private var damagePosted = false
     private var cursorMoved = false
     private var propertyChanged = false
+
+    // Inline images (#583) - MUST be initialized before terminalNative, because the
+    // native callbacks (onImageFragment/onImageEdit) can fire on the first bytes.
+    private fun limits(policy: InlineImages): InlineImageLimits = when (policy) {
+        InlineImages.Off -> InlineImageLimits()
+        is InlineImages.On -> policy.limits
+        is InlineImages.Ask -> policy.limits
+    }
+
+    internal val imageStore = InlineImageStore(limits(inlineImages), handler).apply {
+        rows = initialRows
+        cols = initialCols
+    }
+    private val imageProtocol = InlineImageProtocol(
+        imageStore,
+        { data -> handler.post { onKeyboardInput.invoke(data) } },
+        { payload, row, col -> onOscSequence(1337, payload, row, col) },
+    ).apply {
+        enabled = inlineImages !is InlineImages.Off
+        consentGate = createConsentGate(inlineImages)
+    }
+
+    @Volatile private var imagePolicy: InlineImages = inlineImages
+
+    override val inlineImages: InlineImages get() = imagePolicy
+
+    override fun setInlineImages(inlineImages: InlineImages): Unit = synchronized(damageLock) {
+        val oldLimits = imageStore.limits
+        imageProtocol.consentGate?.reset()
+        imageProtocol.reset()
+        imagePolicy = inlineImages
+        imageProtocol.enabled = inlineImages !is InlineImages.Off
+        imageStore.limits = limits(inlineImages)
+        imageProtocol.consentGate = createConsentGate(inlineImages)
+        if (inlineImages is InlineImages.Off || oldLimits != imageStore.limits) imageStore.clear()
+        propertyChanged = true
+        requestProcessPendingUpdatesLocked()
+    }
+
+    // Upstream serialises the consent completion through its FIFO command queue.
+    // This fork has no queue, and a handler post would leave the outcome invisible
+    // to any caller that does not pump a loop again, so the completion runs
+    // synchronously in resumeWith under the same locks the queue gave it.
+    private fun createConsentGate(policy: InlineImages): InlineImageConsentGate? {
+        if (policy !is InlineImages.Ask) return null
+        return InlineImageConsentGate(policy.limits.maxImages) { request, completion ->
+            handler.post {
+                policy.confirm.startCoroutine(
+                    request,
+                    object : Continuation<Boolean> {
+                        override val context = EmptyCoroutineContext
+                        override fun resumeWith(result: Result<Boolean>) {
+                            synchronized(damageLock) {
+                                synchronized(imageStore) { completion(result.getOrDefault(false)) }
+                                propertyChanged = true
+                                requestProcessPendingUpdatesLocked()
+                            }
+                        }
+                    },
+                )
+            }
+        }
+    }
 
     // Pending semantic segments to apply during processPendingUpdates
     private val pendingSemanticSegments = mutableListOf<PendingSemanticSegment>()
@@ -616,6 +732,8 @@ internal class TerminalEmulatorImpl(
 
         // Resize currentLines to match new dimensions, preserving semantic segments
         synchronized(damageLock) {
+            imageStore.rows = newRows
+            imageStore.cols = newCols
             val oldLines = currentLines
             currentLines = List(newRows) { row ->
                 if (row < oldLines.size) {
@@ -877,6 +995,7 @@ internal class TerminalEmulatorImpl(
                         // it — alt-screen activation always paints a
                         // fresh buffer.
                         3 -> {
+                            imageStore.switchScreen(value.value)
                             altScreenActive = value.value
                             propertyChanged = true
                             if (!value.value) {
@@ -956,6 +1075,10 @@ internal class TerminalEmulatorImpl(
             scrollback.add(line)
             if (scrollback.size > maxScrollbackLines) {
                 scrollback.removeAt(0)
+                // The ring now holds exactly maxScrollbackLines history rows, so drop
+                // any image placement that can no longer be reached by a history
+                // line's snapshot query (row - size ≥ -maxScrollbackLines). #583
+                imageStore.trimHistory(maxScrollbackLines)
             }
             scrollbackDirty = true
 
@@ -994,6 +1117,7 @@ internal class TerminalEmulatorImpl(
 
     override fun clearScrollback(): Int {
         synchronized(damageLock) {
+            imageStore.trimHistory(0)
             scrollback.clear()
             scrollbackDirty = true
             propertyChanged = true
@@ -1373,6 +1497,10 @@ internal class TerminalEmulatorImpl(
                         reverse = cellRun.reverse,
                         strike = cellRun.strike,
                         width = width,
+                        // #583: placeholder runs are isolated, so the run-level ids
+                        // belong to this single cell.
+                        imageId = cellRun.imageId.toLong(),
+                        placementId = cellRun.placementId.toLong(),
                     ),
                 )
 
@@ -1438,9 +1566,27 @@ internal class TerminalEmulatorImpl(
             scrollbackCopy = scrollbackSnapshot // Reuse cached immutable copy
         }
 
+        val hasImages = imageStore.assets.isNotEmpty()
+        if (hasImages) imageStore.preparePlaceholders(lines, scrollbackCopy)
         return TerminalSnapshot(
-            lines = lines,
-            scrollback = scrollbackCopy,
+            lines = if (!hasImages) {
+                lines
+            } else {
+                lines.mapIndexed { row, line ->
+                    val images = (imageStore.slices(row) + imageStore.placeholders(line.cells))
+                        .sortedWith(compareBy<ImageSlice> { it.z }.thenBy { it.asset.id })
+                    if (images.isEmpty()) line else line.copy(images = images)
+                }
+            },
+            scrollback = if (!hasImages) {
+                scrollbackCopy
+            } else {
+                scrollbackCopy.mapIndexed { row, line ->
+                    val images = imageStore.slices(row - scrollbackCopy.size, false) +
+                        imageStore.placeholders(line.cells)
+                    if (images.isEmpty()) line else line.copy(images = images)
+                }
+            },
             cursorRow = cursorRow,
             cursorCol = cursorCol,
             cursorVisible = cursorVisible,

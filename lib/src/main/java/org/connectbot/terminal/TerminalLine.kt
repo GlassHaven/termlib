@@ -40,6 +40,9 @@ internal data class TerminalLine(
      * multiple lines should be copied as a single line without embedded newlines.
      */
     val softWrapped: Boolean = false,
+    // Inline images visible on this line (#583), sorted by z band then asset id.
+    // Filled in by the emulator when building a snapshot; empty otherwise.
+    val images: List<ImageSlice> = emptyList(),
 ) {
     /**
      * Get the text content of this line as a string.
@@ -47,8 +50,14 @@ internal data class TerminalLine(
     val text: String by lazy {
         buildString {
             cells.forEach { cell ->
-                append(cell.char)
-                cell.combiningChars.forEach { append(it) }
+                if (cell.isImagePlaceholder) {
+                    // Inline-image placeholder cells (#583) draw an image over
+                    // this column; the underlying marker glyph is not content.
+                    append(' ')
+                } else {
+                    append(cell.char)
+                    cell.combiningChars.forEach { append(it) }
+                }
             }
         }
     }
@@ -63,7 +72,7 @@ internal data class TerminalLine(
     internal val columnText: String by lazy {
         buildString {
             cells.forEach { cell ->
-                append(cell.char)
+                append(if (cell.isImagePlaceholder) ' ' else cell.char)
             }
         }
     }
@@ -147,6 +156,10 @@ internal data class TerminalLine(
         val strike: Boolean = false,
         // 1 for normal, 2 for fullwidth (CJK)
         val width: Int = 1,
+        // Kitty unicode-placeholder metadata (#583): the low image id (native chars[14])
+        // and the placement id carried on the raw foreground colour. 0 for normal cells.
+        val imageId: Long = 0L,
+        val placementId: Long = 0L,
     )
 
     companion object {
@@ -200,3 +213,12 @@ internal data class TerminalLine(
         )
     }
 }
+
+/**
+ * True when this cell is a Kitty unicode placeholder for an inline-image slice
+ * (#583): the base codepoint U+10EEEE stored as a surrogate pair across
+ * [TerminalLine.Cell.char] (high) and `combiningChars[0]` (low). The payload
+ * diacritics follow in `combiningChars[1..3]`.
+ */
+internal val TerminalLine.Cell.isImagePlaceholder: Boolean
+    get() = char == '\uDBFB' && combiningChars.firstOrNull() == '\uDEEE'

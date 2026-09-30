@@ -104,6 +104,18 @@ Terminal::Terminal(JNIEnv* env, jobject callbacks, int rows, int cols, bool enab
     if (!mOscSequenceMethod) {
         LOGE("Failed to find onOscSequence method");
     }
+    mImageFragmentMethod = env->GetMethodID(callbacksClass, "onImageFragment", "(Z[BZZII)J");
+    if (!mImageFragmentMethod) {
+        LOGE("Failed to find onImageFragment method");
+    }
+    mImageEditMethod = env->GetMethodID(callbacksClass, "onImageEdit", "(IIIIIII)V");
+    if (!mImageEditMethod) {
+        LOGE("Failed to find onImageEdit method");
+    }
+    mImageQueryMethod = env->GetMethodID(callbacksClass, "onImageQuery", "(I)V");
+    if (!mImageQueryMethod) {
+        LOGE("Failed to find onImageQuery method");
+    }
 
     // Cache CellRun class and field IDs
     ScopedLocalRef<jclass> cellRunLocal(env, env->FindClass("org/connectbot/terminal/CellRun"));
@@ -126,6 +138,8 @@ Terminal::Terminal(JNIEnv* env, jobject callbacks, int rows, int cols, bool enab
     mDhlField = env->GetFieldID(mCellRunClass, "dhl", "I");
     mCharsField = env->GetFieldID(mCellRunClass, "chars", "[C");
     mRunLengthField = env->GetFieldID(mCellRunClass, "runLength", "I");
+    mImageIdField = env->GetFieldID(mCellRunClass, "imageId", "I");
+    mPlacementIdField = env->GetFieldID(mCellRunClass, "placementId", "I");
 
     // Cache all callback-related classes and methods to avoid repeated FindClass/GetMethodID
     LOGD("Caching callback classes and methods...");
@@ -216,7 +230,11 @@ Terminal::Terminal(JNIEnv* env, jobject callbacks, int rows, int cols, bool enab
         .resize = nullptr,  // We handle resize explicitly
         .sb_pushline = termSbPushline,
         .sb_popline = termSbPopline,
-        .sb_clear = termSbClear
+        .sb_clear = termSbClear,
+        .edit = termImageEdit,
+        .scroll = termImageScroll,
+        .clear_images = termImageClear,
+        .image_resize = termImageResize
     };
     vterm_screen_set_callbacks(mVts, &mScreenCallbacks, this);
 
@@ -224,11 +242,11 @@ Terminal::Terminal(JNIEnv* env, jobject callbacks, int rows, int cols, bool enab
     // no-synchronous-reentry rule as screen callbacks above.
     VTermState* state = vterm_obtain_state(mVt);
     VTermStateFallbacks fallbacks = {
-        .control = nullptr,
-        .csi = nullptr,
+        .control = termControlFallback,
+        .csi = termCsiFallback,
         .osc = termOscFallback,
         .dcs = nullptr,
-        .apc = nullptr,
+        .apc = termApcFallback,
         .pm = nullptr,
         .sos = nullptr
     };
@@ -451,17 +469,43 @@ int Terminal::getCellRun(JNIEnv* env, int row, int col, jobject runObject) {
     VTermScreenCell cell;
     vterm_screen_get_cell(mVts, pos, &cell);
 
-    // Collect cells with same attributes
+    // Collect cells with same attributes. For a placeholder run (see below)
+    // runLength doubles as the UTF-16 write cursor into chars[] and is
+    // rebased to a cell count before it is handed to Kotlin.
     int runLength = 0;
     jchar chars[256];  // Max run length
+
+    // A Kitty unicode-placeholder cell (cell char U+10EEEE) is a marker for an
+    // inline-image slice (#583). Its identity comes from the raw foreground
+    // colour (image id) and chars[14] (placement id), so it must never merge
+    // into a run with neighbouring cells: each placeholder gets its own run.
+    const bool imageCell = cell.chars[0] == 0x10eeee;
+    jint imageId = 0;
+    jint placementId = 0;
+    if (imageCell) {
+        const VTermColor& color = cell.fg;
+        if (VTERM_COLOR_IS_DEFAULT_FG(&color)) {
+            imageId = 0;
+        } else if (VTERM_COLOR_IS_INDEXED(&color)) {
+            imageId = color.indexed.idx;
+        } else {
+            imageId = (color.rgb.red << 16) | (color.rgb.green << 8) | color.rgb.blue;
+        }
+        placementId = cell.chars[14];
+    }
 
     for (int c = col; c < mCols && runLength < 256; c++) {
         VTermPos currentPos = { row, c };
         VTermScreenCell currentCell;
         vterm_screen_get_cell(mVts, currentPos, &currentCell);
 
-        // Check if attributes match (skip for first cell)
-        if (c > col && !cellStyleEqual(cell, currentCell)) {
+        // Check if attributes match (skip for first cell). Placeholder cells
+        // are always isolated so their per-cell ids survive the run merge.
+        if (c > col && (!cellStyleEqual(cell, currentCell) ||
+                        imageCell != (currentCell.chars[0] == 0x10eeee))) {
+            break;
+        }
+        if (imageCell && c > col) {
             break;
         }
 
@@ -521,16 +565,37 @@ int Terminal::getCellRun(JNIEnv* env, int row, int col, jobject runObject) {
     env->SetBooleanField(runObject, mDwlField, cell.attrs.dwl);
     env->SetIntField(runObject, mDhlField, cell.attrs.dhl);
 
+    // Inline-image ids (#583): nonzero only when this run is an isolated
+    // Kitty unicode-placeholder cell. Kotlin side decodes the image/placement.
+    env->SetIntField(runObject, mImageIdField, imageId);
+    env->SetIntField(runObject, mPlacementIdField, placementId);
+
     // Set character array using thread-local pool to eliminate allocations
-    // If this is the first call on this thread, or array is too small, allocate/resize
-    if (tls_charArray == nullptr || tls_charArraySize < runLength) {
+    // If this is the first call on this thread, or array is too small, allocate/resize.
+    // A placeholder run covers one cell but expands to several UTF-16 chars
+    // (surrogate pair + payload marks): the copied char region and the
+    // returned cell count split here, because the Kotlin side must walk it
+    // as one cell while still seeing the full glyph.
+    const int charCount = runLength;
+    if (imageCell) {
+        runLength = 1;
+        // Zero the char just past the copied region so the Kotlin walk's
+        // combining/surrogate collection cannot pick up stale tail data left
+        // in the pooled thread-local array by a previous run. The sentinel
+        // is copied along with the glyph below.
+        if (charCount < 256) {
+            chars[charCount] = 0;
+        }
+    }
+
+    if (tls_charArray == nullptr || tls_charArraySize < charCount) {
         // Clean up old array if it exists
         if (tls_charArray != nullptr) {
             env->DeleteGlobalRef(tls_charArray);
         }
 
         // Allocate new array with some headroom (round up to nearest 64)
-        jsize newSize = ((runLength + 63) / 64) * 64;
+        jsize newSize = ((charCount + 63) / 64) * 64;
         ScopedLocalRef<jcharArray> localArray(env, env->NewCharArray(newSize));
         tls_charArray = (jcharArray)env->NewGlobalRef(localArray);
         tls_charArraySize = newSize;
@@ -539,7 +604,11 @@ int Terminal::getCellRun(JNIEnv* env, int row, int col, jobject runObject) {
     }
 
     // Reuse the thread-local array
-    env->SetCharArrayRegion(tls_charArray, 0, runLength, chars);
+    if (imageCell && charCount < 256) {
+        env->SetCharArrayRegion(tls_charArray, 0, charCount + 1, chars);
+    } else {
+        env->SetCharArrayRegion(tls_charArray, 0, charCount, chars);
+    }
     env->SetObjectField(runObject, mCharsField, tls_charArray);
 
     env->SetIntField(runObject, mRunLengthField, runLength);
@@ -617,6 +686,27 @@ void Terminal::termOutput(const char* s, size_t len, void* user) {
 int Terminal::termOscFallback(int command, VTermStringFragment frag, void* user) {
     auto* term = static_cast<Terminal*>(user);
 
+    if (command == 1337) {
+        if (frag.initial) {
+            // Keep ordinary OSC 1337 traffic on the original fast path. A short
+            // first fragment remains ambiguous and is safely accumulated by the
+            // image parser. (Ported from upstream 0.3.9; #583)
+            static constexpr const char* prefixes[] = {
+                "File=", "MultipartFile=", "FilePart=", "FileEnd", "Capabilities"
+            };
+            term->mOsc1337Image = frag.len == 0;
+            for (const char* prefix : prefixes) {
+                if (term->mOsc1337Image) break;
+                const size_t prefixLen = std::strlen(prefix);
+                if (std::memcmp(frag.str, prefix, std::min(frag.len, prefixLen)) == 0) {
+                    term->mOsc1337Image = true;
+                    break;
+                }
+            }
+        }
+        if (term->mOsc1337Image && term->imageFragment(false, frag) >= 0) return 1;
+    }
+
     // Start of a new OSC sequence
     if (frag.initial) {
         term->mOscData.clear();
@@ -658,6 +748,81 @@ int Terminal::termOscFallback(int command, VTermStringFragment frag, void* user)
     }
 
     return 1;  // Indicate we're handling this (continue accumulating)
+}
+
+jlong Terminal::imageFragment(bool kitty, VTermStringFragment frag) {
+    JNIEnv* env;
+    if (mJavaVM->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK || env->ExceptionCheck()) return 0;
+    VTermPos pos{};
+    vterm_state_get_cursorpos(vterm_obtain_state(mVt), &pos);
+    jlong result = 0;
+    size_t offset = 0;
+    do {
+        const jsize count = static_cast<jsize>(std::min<size_t>(4096, frag.len - offset));
+        ScopedLocalRef<jbyteArray> bytes(env, env->NewByteArray(count));
+        if (!bytes.get()) return 0;
+        if (count) env->SetByteArrayRegion(bytes, 0, count, (const jbyte*)frag.str + offset);
+        JNI_CHECK_EXCEPTION_RETURN(env, 0);
+        result = env->CallLongMethod(mCallbacks, mImageFragmentMethod, kitty, bytes.get(),
+            frag.initial && offset == 0, frag.final && offset + count == frag.len, pos.row, pos.col);
+        JNI_CHECK_EXCEPTION_RETURN(env, 0);
+        offset += count;
+    } while (offset < frag.len);
+    if (result >= 0) mImageTracking = true;
+    if (result > 0) {
+        int rows = (result >> 32) & 0xffff;
+        int cols = (result >> 1) & 0xffff;
+        mReservingImage = true;
+        vterm_state_place_image(vterm_obtain_state(mVt), rows, cols, result & 1);
+        mReservingImage = false;
+    }
+    return result;
+}
+
+int Terminal::termApcFallback(VTermStringFragment frag, void* user) {
+    static_cast<Terminal*>(user)->imageFragment(true, frag);
+    return 1;
+}
+
+int Terminal::termControlFallback(unsigned char control, void* user) {
+    if (control != 0x18) return 0;
+    return static_cast<Terminal*>(user)->imageEdit(4, {});
+}
+
+int Terminal::termCsiFallback(const char* leader, const long args[], int argcount, const char* intermed, char command, void* user) {
+    if (command != 't' || (leader && *leader) || (intermed && *intermed) || argcount != 1 ||
+        (args[0] != 14 && args[0] != 16 && args[0] != 18)) return 0;
+    auto* term = static_cast<Terminal*>(user);
+    JNIEnv* env;
+    if (term->mJavaVM->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK || env->ExceptionCheck()) return 0;
+    env->CallVoidMethod(term->mCallbacks, term->mImageQueryMethod, static_cast<jint>(args[0]));
+    return 1;
+}
+
+int Terminal::termImageResize(int buffer, int delta, int rows, int cols, void* user) {
+    return static_cast<Terminal*>(user)->imageEdit(3, {buffer, rows, cols, 0}, delta, 0);
+}
+
+int Terminal::imageEdit(int kind, VTermRect rect, int downward, int rightward) {
+    if (!mImageTracking) return 1;
+    if (mReservingImage && kind != 1) return 1;
+    JNIEnv* env;
+    if (mJavaVM->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK || env->ExceptionCheck()) return 0;
+    env->CallVoidMethod(mCallbacks, mImageEditMethod, kind, rect.start_row, rect.end_row,
+        rect.start_col, rect.end_col, downward, rightward);
+    return 1;
+}
+
+int Terminal::termImageEdit(VTermRect rect, void* user) {
+    return static_cast<Terminal*>(user)->imageEdit(0, rect);
+}
+
+int Terminal::termImageScroll(VTermRect rect, int downward, int rightward, void* user) {
+    return static_cast<Terminal*>(user)->imageEdit(1, rect, downward, rightward);
+}
+
+int Terminal::termImageClear(void* user) {
+    return static_cast<Terminal*>(user)->imageEdit(2, {});
 }
 
 // OSC 52 selection set callback - receives base64-decoded clipboard data from libvterm
@@ -734,6 +899,16 @@ int Terminal::invokeMoverect(VTermRect dest, VTermRect src) {
 
 void Terminal::invokeMoveCursor(int row, int col, int oldRow, int oldCol, bool visible) {
     if (!mMoveCursorMethod) {
+        return;
+    }
+
+    if (mCursorBatchActive) {
+        mCursorPosition.row = row;
+        mCursorPosition.col = col;
+        mCursorOldPosition.row = oldRow;
+        mCursorOldPosition.col = oldCol;
+        mCursorVisible = visible;
+        mCursorPending = true;
         return;
     }
 
@@ -1087,6 +1262,24 @@ void Terminal::invokeClearScrollback() {
 
     env->CallIntMethod(mCallbacks, mClearScrollbackMethod);
     JNI_CHECK_EXCEPTION(env);
+}
+
+void Terminal::beginCursorBatch() {
+    mCursorBatchActive = true;
+    mCursorPending = false;
+}
+
+void Terminal::finishCursorBatch() {
+    mCursorBatchActive = false;
+    if (!mCursorPending) return;
+
+    mCursorPending = false;
+    invokeMoveCursor(
+        mCursorPosition.row,
+        mCursorPosition.col,
+        mCursorOldPosition.row,
+        mCursorOldPosition.col,
+        mCursorVisible);
 }
 
 void Terminal::invokeKeyboardOutput(const char* data, size_t len) {

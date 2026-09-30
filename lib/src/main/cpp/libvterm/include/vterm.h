@@ -18,10 +18,11 @@ extern "C" {
 #define VTERM_CHECK_VERSION \
         vterm_check_version(VTERM_VERSION_MAJOR, VTERM_VERSION_MINOR)
 
-/* Any cell can contain at most one basic printing character and 5 combining
- * characters. This number could be changed but will be ABI-incompatible if
- * you do */
-#define VTERM_MAX_CHARS_PER_CELL 6
+/* Any cell can contain at most one basic printing character and 15 combining
+ * characters. Larger than stock libvterm's 6: the inline-image work (#583)
+ * stores an image id at chars[14] of a Kitty unicode-placeholder cell, past
+ * the payload terminator at chars[4]. */
+#define VTERM_MAX_CHARS_PER_CELL 16
 
 typedef struct VTerm VTerm;
 typedef struct VTermState VTermState;
@@ -410,6 +411,9 @@ typedef struct {
   int (*pm)(VTermStringFragment frag, void *user);
   int (*sos)(VTermStringFragment frag, void *user);
   int (*resize)(int rows, int cols, void *user);
+  /* An image transfer in progress was interrupted (CAN/SUB). Only ever set
+   * when the parser callback struct is the image-carrying one; NULL safe. */
+  void (*cancel)(void *user);
 } VTermParserCallbacks;
 
 void  vterm_parser_set_callbacks(VTerm *vt, const VTermParserCallbacks *callbacks, void *user);
@@ -541,7 +545,16 @@ typedef struct {
   int (*sb_pushline)(int cols, const VTermScreenCell *cells, void *user);
   int (*sb_popline)(int cols, VTermScreenCell *cells, void *user);
   int (*sb_clear)(void* user);
+  /* Inline-image extension: exact mutations, independent of merged display
+   * damage, so placed images can follow their content. */
+  int (*edit)(VTermRect rect, void *user);
+  int (*scroll)(VTermRect rect, int downward, int rightward, void *user);
+  int (*clear_images)(void *user);
+  int (*image_resize)(int buffer, int delta, int rows, int cols, void *user);
 } VTermScreenCallbacks;
+
+/* Reserve inline image cells without recursively entering the input parser. */
+void vterm_state_place_image(VTermState *state, int rows, int cols, int reserve);
 
 VTermScreen *vterm_obtain_screen(VTerm *vt);
 
