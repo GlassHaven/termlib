@@ -3335,7 +3335,15 @@ private fun DrawScope.drawLine(
     val behindBackground = line.images.filter { it.z < -1_073_741_824 }
     behindBackground.forEach { it.draw(drawContext.canvas.nativeCanvas, row, charWidth, charHeight) }
 
-    var x = 0f
+    // Per-column left edges, computed once for both passes. A shared mutable
+    // running offset made the text pass start where the background pass ended
+    // when the line render was split for the image bands — every glyph drew
+    // past the viewport's right edge and text vanished while cell colours
+    // stayed put. Both passes read this one array instead.
+    val cellLeft = FloatArray(line.cells.size + 1)
+    for (i in line.cells.indices) {
+        cellLeft[i + 1] = cellLeft[i] + charWidth * line.cells[i].width
+    }
 
     // Background rectangles
     line.cells.forEachIndexed { col, cell ->
@@ -3352,12 +3360,10 @@ private fun DrawScope.drawLine(
         if (finalBgColor != defaultBg || isSelected) {
             drawRect(
                 color = finalBgColor,
-                topLeft = Offset(x, y),
+                topLeft = Offset(cellLeft[col], y),
                 size = Size(cellWidth, charHeight),
             )
         }
-
-        x += cellWidth
     }
 
     // Inline images drawn above the background rectangles but below the text
@@ -3403,7 +3409,7 @@ private fun DrawScope.drawLine(
             // Draw text
             drawContext.canvas.nativeCanvas.drawText(
                 text,
-                x,
+                cellLeft[col],
                 y + charBaseline,
                 textPaint,
             )
@@ -3411,7 +3417,7 @@ private fun DrawScope.drawLine(
             // Draw double underline if needed
             if (cell.underline == 2) {
                 drawDoubleUnderline(
-                    x = x,
+                    x = cellLeft[col],
                     y = y + charBaseline,
                     width = cellWidth,
                     color = fgColor,
@@ -3421,7 +3427,7 @@ private fun DrawScope.drawLine(
             // Draw curly underline if needed
             if (cell.underline == 3) {
                 drawCurlyUnderline(
-                    x = x,
+                    x = cellLeft[col],
                     y = y + charBaseline,
                     width = cellWidth,
                     charWidth = charWidth,
@@ -3430,7 +3436,6 @@ private fun DrawScope.drawLine(
             }
         }
 
-        x += cellWidth
     }
 
     // Inline images drawn above the text pass
