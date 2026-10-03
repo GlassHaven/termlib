@@ -304,6 +304,112 @@ class ScrollDamageMergeTest {
         }
     }
 
+    /**
+     * Absolute check: at each chunk boundary the incremental mirror must equal
+     * a forced full re-pull of the native buffer. Unlike the differential above
+     * (which compares two feeding modes and so misses a defect present in both),
+     * this catches a stale mirror regardless of feeding mode: setAnsiPalette
+     * redamages the whole screen, so the re-pull reflects the native truth.
+     */
+    @Test
+    fun realCaptureMirrorMatchesFullRepullAtBoundaries() {
+        val bytes = Base64.getDecoder().decode(
+                        "SBtbMTsyM3IbWzM1OzVIG1s/MjVsG1s/MTAwNmwbWz8xMDAwbBtbPzEwMDJsG1s/MTAwM2wbWz8xMDA2aBtbPzEwMDBoG1s/MTAw" +
+            "MmgbWz8xMDAzaBtbMTh0G1sxNHQbKEIbW20bWz8xMmwbWz8yNWgbWz8xMDA2bBtbPzEwMDBsG1s/MTAwMmwbWz8xMDAzbBtbMTsx" +
+            "SBtbMTsyM3IbWzIyOzVIG1s/MjVsG1s/MTAwNmwbWz8xMDAwbBtbPzEwMDJsG1s/MTAwM2wbWz8xMDA2aBtbPzEwMDBoG1s/MTAw" +
+            "MmgbWz8xMDAzaBtbMTsySBtbMUsbW0NzdGlsbBtbMVgbW0Njb3JydXB0G1sxWBtbQ2V4YWN0bHkbWzFYG1tDdGhlG1sxWBtbQ1Ay" +
+            "G1sxWBtbQ3N0aWZmbmVzcxtbMVgbW0PigJQbWzFYG1tDbWF0Y2hpbmcbWzI7MkgbWzFLG1tDZXZlcnkbWzFYG1tDc3ltcHRvbS4b" +
+            "WzFYG1tDVGhlG1sxWBtbQ1AxG1sxWBtbQ2V4cGVyaW1lbnQbWzFYG1tDaGFzG1sxWBtbQ25vG1tLG1szOzJIG1sxSxtbQ2FuYWxv" +
+            "Z291cxtbMVgbW0NnYXAuG1sxWBtbQ0NoZWNraW5nG1sxWBtbQ3doYXQbWzFYG1tDdGhhdBtbMVgbW0Nhcmd1bWVudBtbMVgbW0Nt" +
+            "ZWFuczobWzQ7MUgbW0sbWzU7MkgbWzFLG1szODs1OzI0Nm0bW0NUaG91Z2h0IGZvciAbWzFtMW0gMjBzGyhCG1ttG1szODs1OzI0" +
+            "Nm0sIHNlYXJjaGVkIGZvciAbWzFtMxsoQhtbbRtbMzg7NTsyNDZtIHBhdHRlcm5zLCByZWFkG1szOW0bWzY7MkgbWzFLG1szODs1" +
+            "OzI0Nm0bWzFtG1tDMhsoQhtbbRtbMzg7NTsyNDZtIGZpbGVzIBtbMzltG1tLDQobW0sbWzM4OzU7MTE0bQ0K4pePG1szOW0bWzFY" +
+            "G1tDQmFja2dyb3VuZBtbMVgbW0Njb21tYW5kG1sxWBtbQyJSdW4bWzFYG1tDZml4ZWQtdGhpY2tuZXNzG1sxWBtbQ2gbWzFYG1tD" +
+            "c3dlZXAbW0sNCihQMikbWzFYG1tDYW5kG1sxWBtbQ1AxG1sxWBtbQ3Nhbml0eRtbMVgbW0NhdBtbMVgbW0NoPTAuMSIbWzFYG1tD" +
+            "Y29tcGxldGVkG1sxWBtbQyhleGl0G1sxWBtbQ2NvZGUbW0sNCjApG1tLDQobW0sbWzM4OzU7MjMxbQ0K4pePG1szOW0bWzFYG1tD" +
+            "VGhlG1sxWBtbQ3J1bGUbWzFYG1tDY2hlY2tzG1sxWBtbQ291dDobWzFYG1tDdGhlG1sxWBtbQ2ZvdXIbWzFYG1tDcG9pbnRzG1tL" +
+            "G1sxMzsySBtbMUsbW0MoYSxhLGEpLChiLGEsYSksKGEsYixhKSwoYSxhLGIpG1sxWBtbQ3dpdGgbWzFYG1tDYT0oNeKIkuKImjUp" +
+            "LzIwLBtbMTQ7MkgbWzFLG1tDYj0oNSsz4oiaNSkvMjAsG1sxWBtbQ3c9MS8yNBtbMVgbW0NhcmUbWzFYG1tDdGhlG1sxWBtbQ3N0" +
+            "YW5kYXJkG1sxWBtbQ2RlZ3JlZS0yG1tLG1sxNTsySBtbMUsbW0N0ZXQbWzFYG1tDcnVsZRtbMVgbW0PigJQbWzFYG1tDSRtbMVgb" +
+            "W0N2ZXJpZmllZBtbMVgbW0PiiKt44oKBeOKCghtbMVgbW0NieRtbMVgbW0NoYW5kOhtbMVgbW0MyYcKyKzJhYhtbMVgbW0M9G1tL" +
+            "G1sxNjsySBtbMUsbW0MwLjIsG1sxWBtbQy8yNBtbMVgbW0M9G1sxWBtbQzEvMTIwG1sxWBtbQz0bWzFYG1tDZXhhY3QbWzFYG1tD" +
+            "dmFsdWUuG1sxWBtbQ1F1YWRyYXR1cmUbWzFYG1tDaXMbW0sbWzE3OzJIG1sxSxtbQ2V4b25lcmF0ZWQ7G1sxWBtbQ3RoZRtbMVgb" +
+            "W0NkZWdyZWUtMhtbMVgbW0NpbnRlZ3JhbmQbWzFYG1tDKGFmZmluZRtbMVgbW0Njb3JuZXIbWzE4OzJIG1sxSxtbQ21hcCwbWzFY" +
+            "G1tDQhtbMVgbW0NsaW5lYXIpG1sxWBtbQ2lzG1sxWBtbQ2ludGVncmF0ZWQbWzFYG1tDZXhhY3RseS4bWzFYG1tDU28bWzFYG1tD" +
+            "dGhlG1sxWBtbQ1AyG1tLG1sxOTsySBtbMUsbW0NtYWNoaW5lcnkbWzM4OzU7MjMxbRtbNDg7NTsyMzdtIEp1bXAgdG8gYm90dG9t" +
+            "IChjdHJsK0VuZCkg4oaTIBtbMzltG1s0OW0bW0sNChtbSxtbMzg7NTsyNDRtDQrilIDilIDilIDilIDilIDilIDilIDilIDilIDi" +
+            "lIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDi" +
+            "lIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIAbKEIbW20bWzM4OzU7MjQ2bRtbMjI7MUji" +
+            "na/CoBtbMzltG1sxWBtbQ2wbWzdtIBsoQhtbbRtbSxtbMzBtG1s0Mm0NCltnZW1pbmldIDxsPiLinLMgTG9jYWwgcHJvamVjdCBn" +
+            "b2FsICIgMTQ6MTIgMDMtT2N0LTI2GyhCG1ttG1syMjs1SBtbMTsyMnIbWzIyUxtbMTsxSBtbMzg7NTsyMzltG1s0ODs1OzIzN23i" +
+            "na8gd2UndmUgYmVlbiBwcm9ncmVzc2luZyB0aGUgbG9jYWwgcHJvamVjdCBnb2FsIHXigKYbWzM5bSAbWzM7MUgbWzQ5bRtbMzg7" +
+            "NTsyMzFt4pePG1tDG1szOW1UaGUbW0Nhc3NlbWJseRtbQ3F1YWRyYXR1cmUbW0NpcxtbNDszSBtbMzg7NTsxNTNtdGV0cmFoZWRy" +
+            "b25fcXVhZHJhdHVyZSgyKRtbQxtbMzltd2l0aBtbQ3RoZRtbQ21hcBtbQ2Fsd2F5cxtbNTszSGJ1aWx0G1tDZnJvbRtbQ2Nvcm5l" +
+            "cnMbW0Nvbmx5G1s2OzNIKBtbMzg7NTsxNTNtZnJvbV90ZXRyYWhlZHJvbl92ZXJ0aWNlcxtbMzltKRtbQ+KAlBtbQ2FmZmluZRtb" +
+            "Q21hcCwbW0NtaWQbWzc7M0hub2RlcxtbQ25ldmVyG1tDZW50ZXIbW0N0aGUbW0NnZW9tZXRyeS4bW0NXaXRoG1tDc3RyYWlnaHQb" +
+            "Wzg7M0hlZGdlcxtbQ3RoZRtbQ3N0aWZmbmVzcxtbQ2ludGVncmFuZBtbQ2lzG1tDZXhhY3RseRtbQ2RlZ3JlZRtbOTszSDIsG1tD" +
+            "c28bW0N0aGUbW0NydWxlG1tDaXMbW0NleGFjdBtbQxtbM21pZhtbQxsoQhtbbXRoZRtbQ2FyZ3VtZW50G1tDbWVhbnMbWzEwOzNI" +
+            "ZGVncmVlLhtbQ0J1dBtbQ3RoZRtbQ3BhdGNoG1tDdGVzdHMbW0Nvbmx5G1tDZXhlcmNpc2UbWzExOzNIZGVncmVlLTEbW0NpbnRl" +
+            "Z3JhbmRzG1tDKOKIh8+GX2HhtYDCt8+D4oKAG1tDaXMbW0NsaW5lYXIpLBtbQ3NvG1tDYRtbMTI7M0hydWxlG1tDdGhhdCdzG1tD" +
+            "ZXhhY3QbW0Nmb3IbW0NsaW5lYXJzG1tDYnV0G1tDd3JvbmcbW0Nmb3IbWzEzOzNIcXVhZHJhdGljcxtbQ3dvdWxkG1tDcGFzcxtb" +
+            "Q2V2ZXJ5G1tDY2hlY2sbW0NzbxtbQ2ZhchtbQ2FuZBtbMTQ7M0hzdGlsbBtbQ2NvcnJ1cHQbW0NleGFjdGx5G1tDdGhlG1tDUDIb" +
+            "W0NzdGlmZm5lc3MbW0PigJQbW0NtYXRjaGluZxtbMTU7M0hldmVyeRtbQ3N5bXB0b20uG1tDVGhlG1tDUDEbW0NleHBlcmltZW50" +
+            "G1tDaGFzG1tDbm8bWzE2OzNIYW5hbG9nb3VzG1tDZ2FwLhtbQ0NoZWNraW5nG1tDd2hhdBtbQ3RoYXQbW0Nhcmd1bWVudBtbQ21l" +
+            "YW5zOhtbMTc7MTJIG1szODs1OzIzMW0bWzQ4OzU7MjM3bSBKdW1wIHRvIGJvdHRvbSAoY3RybCtFbmQpIOKGkyAbWzE5OzFIG1s0" +
+            "OW0bKEIbW20bWzM4OzU7MjQ0beKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKU" +
+            "gOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKU" +
+            "gOKUgOKUgOKUgOKUgOKUgOKUgOKUgBtbMjA7MUgbKEIbW20bWzM4OzU7MjQ2beKdr8KgG1tDG1szOW1sG1s3bSANChsoQhtbbRtb" +
+            "Mzg7NTsyNDRt4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA" +
+            "4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA" +
+            "4pSA4pSA4pSA4pSAG1syMjszSBsoQhtbbRtbMzg7NTsyMTFt4o+14o+1IGJ5cGFzcyBwZXJtaXNzaW9ucyBvbhsoQhtbbRtbMzg7" +
+            "NTsyNDZtIChzaGlmdCt0YWIgdG8gY3ljbGUpG1sxOzIzchtbMjA7NUgbKEIbW20bKEIbW20bWz8xMmwbWz8yNWgbWz8xMDA2bBtb" +
+            "PzEwMDBsG1s/MTAwMmwbWz8xMDAzbBtbMTsxSBtbMTsyM3IbWzIwOzVIG1s/MjVsG1s/MTAwNmwbWz8xMDAwbBtbPzEwMDJsG1s/" +
+            "MTAwM2wbWz8xMDA2aBtbPzEwMDBoG1s/MTAwMmgbWz8xMDAzaBtbMzBtG1s0Mm0bWzIzOzFIW2dlbWluaV0gPGw+IuKcsyBMb2Nh" +
+            "bCBwcm9qZWN0IGdvYWwgIiAxNDoxMyAwMy1PY3QtMjYbKEIbW20bWzIwOzVIG1sxNzsxMkggG1szODs1OzIzMW0bWzQ4OzU7MjM3" +
+            "bSAxIG5ldyBtZXNzYWdlG1syMDs1SBsoQhtbbRtbMTg7MTFIG1szODs1OzI0Nm0wJSB1bnRpbCBhdXRvLWNvbXBhY3QgwrcgL21v" +
+            "ZGVsIG9wdXNbMW1dG1syMDs1SBsoQhtbbQ==")
+
+        // Split at EVERY CSI sequence end, not just DECSTBM. tmux emits
+        // DECSTBM then SU; the corrupt state exists right after the SU scroll,
+        // before the next write repaints it, so a boundary must land there too.
+        val boundaries = mutableListOf<Int>()
+        var i = 0
+        while (i < bytes.size - 1) {
+            if (bytes[i] == 0x1b.toByte() && bytes[i + 1] == 0x5b.toByte()) {
+                var j = i + 2
+                while (j < bytes.size) {
+                    val ch = bytes[j].toInt() and 0xFF
+                    if ((ch in 0x40..0x7E) && ch != 0x3b && !(ch in 0x30..0x3F)) break
+                    j++
+                }
+                if (j < bytes.size) boundaries.add(j + 1)
+            }
+            i++
+        }
+        boundaries.add(bytes.size)
+
+        val emu = TerminalEmulatorFactory.create(initialRows = 24, initialCols = 80)
+        val impl = emu as TerminalEmulatorImpl
+        val palette = IntArray(16) { 0 }
+
+        var prev = 0
+        for (b in boundaries) {
+            emu.writeInput(bytes, prev, b - prev)
+            prev = b
+            val incremental = settle(impl).lines.map { it.text }
+            // Force a full re-pull of the native buffer and settle again.
+            emu.setAnsiPalette(palette)
+            val full = settle(impl).lines.map { it.text }
+            for (row in full.indices) {
+                assertEquals(
+                    "row $row stale at boundary $b: incremental mirror differs from full re-pull",
+                    full[row],
+                    incremental[row],
+                )
+            }
+        }
+    }
+
     @Test
     fun damageStraddlingRegionEdgeBeforeScrollMatches() {
         val merged = TerminalEmulatorFactory.create(initialRows = 24, initialCols = 80)
