@@ -398,6 +398,50 @@ class ScrollDamageMergeTest {
         }
     }
 
+    /**
+     * The every-byte-offset test feeds one byte per writeInput, so a scroll
+     * never merges with a later op inside the same write — the coalesced path
+     * the original scrollrect hypothesis targets is untested by it. Real
+     * drain() batches socket bytes into multi-byte writeInputs. This feeds the
+     * capture in random multi-byte chunks (seeded, reproducible) and runs the
+     * absolute mirror-vs-full-repull check after each chunk, where a chunk's
+     * internal scroll+rewrite damage merge actually happens.
+     */
+    @Test
+    fun realCaptureMirrorMatchesFullRepullUnderRandomChunking() {
+        val bytes = captureBytes()
+        val rnd = java.util.Random(676L)
+        val boundaries = mutableListOf<Int>()
+        var pos = 0
+        while (pos < bytes.size) {
+            pos += 1 + rnd.nextInt(200)
+            if (pos < bytes.size) boundaries.add(pos)
+        }
+        boundaries.add(bytes.size)
+
+        val emu = TerminalEmulatorFactory.create(initialRows = 24, initialCols = 80)
+        val impl = emu as TerminalEmulatorImpl
+        val palette = IntArray(16) { 0 }
+        emu.setAnsiPalette(palette)
+        settle(impl)
+
+        var prev = 0
+        for (b in boundaries) {
+            emu.writeInput(bytes, prev, b - prev)
+            prev = b
+            val incremental = settle(impl).lines.map { it.text }
+            emu.setAnsiPalette(palette)
+            val full = settle(impl).lines.map { it.text }
+            for (row in full.indices) {
+                assertEquals(
+                    "row $row stale at chunk boundary $b: incremental mirror differs from full re-pull",
+                    full[row],
+                    incremental[row],
+                )
+            }
+        }
+    }
+
     @Test
     fun damageStraddlingRegionEdgeBeforeScrollMatches() {
         val merged = TerminalEmulatorFactory.create(initialRows = 24, initialCols = 80)
