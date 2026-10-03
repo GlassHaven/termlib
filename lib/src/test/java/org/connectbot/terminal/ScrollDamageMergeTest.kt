@@ -361,6 +361,43 @@ class ScrollDamageMergeTest {
         }
     }
 
+    /**
+     * The untested axis: real socket chunks end wherever the network read
+     * stops, not at CSI sequence ends. Every boundary above lands after a
+     * complete escape sequence, so a settle that interrupts a sequence (mid
+     * CSI, mid-UTF8) was never exercised. This reruns the absolute
+     * mirror-vs-full-repull check at EVERY byte offset. A warm-up re-pull
+     * first converts never-damaged rows from pristine placeholders to the
+     * native empty content, so an early boundary compares like for like.
+     */
+    @Test
+    fun realCaptureMirrorMatchesFullRepullAtEveryByteOffset() {
+        val bytes = captureBytes()
+
+        val emu = TerminalEmulatorFactory.create(initialRows = 24, initialCols = 80)
+        val impl = emu as TerminalEmulatorImpl
+        val palette = IntArray(16) { 0 }
+
+        // Warm the mirror: force a full re-pull of the empty native buffer so
+        // every row holds native-empty content, not a pristine placeholder.
+        emu.setAnsiPalette(palette)
+        settle(impl)
+
+        for (b in 1..bytes.size) {
+            emu.writeInput(bytes, b - 1, 1)
+            val incremental = settle(impl).lines.map { it.text }
+            emu.setAnsiPalette(palette)
+            val full = settle(impl).lines.map { it.text }
+            for (row in full.indices) {
+                assertEquals(
+                    "row $row stale at byte offset $b: incremental mirror differs from full re-pull",
+                    full[row],
+                    incremental[row],
+                )
+            }
+        }
+    }
+
     @Test
     fun damageStraddlingRegionEdgeBeforeScrollMatches() {
         val merged = TerminalEmulatorFactory.create(initialRows = 24, initialCols = 80)
