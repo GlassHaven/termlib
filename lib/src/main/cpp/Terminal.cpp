@@ -1229,14 +1229,27 @@ int Terminal::invokePopScrollbackLine(int cols, VTermScreenCell* cells) {
         }
 
         // Get colors
-        uint8_t fgRed = env->GetIntField(screenCell, fgRedField);
-        uint8_t fgGreen = env->GetIntField(screenCell, fgGreenField);
-        uint8_t fgBlue = env->GetIntField(screenCell, fgBlueField);
-        uint8_t bgRed = env->GetIntField(screenCell, bgRedField);
-        uint8_t bgGreen = env->GetIntField(screenCell, bgGreenField);
-        uint8_t bgBlue = env->GetIntField(screenCell, bgBlueField);
-        vterm_color_rgb(&cell.fg, fgRed, fgGreen, fgBlue);
-        vterm_color_rgb(&cell.bg, bgRed, bgGreen, bgBlue);
+        jint fgRed = env->GetIntField(screenCell, fgRedField);
+        jint fgGreen = env->GetIntField(screenCell, fgGreenField);
+        jint fgBlue = env->GetIntField(screenCell, fgBlueField);
+        jint bgRed = env->GetIntField(screenCell, bgRedField);
+        jint bgGreen = env->GetIntField(screenCell, bgGreenField);
+        jint bgBlue = env->GetIntField(screenCell, bgBlueField);
+        // A negative red channel marks the terminal's default colour: the line
+        // was pushed with it, so it comes back as libvterm's flagged default and
+        // keeps following setDefaultColors instead of freezing the RGB it had
+        // at push time (a theme applied in between painted the backfilled
+        // blank rows as solid rectangles).
+        VTermColor defaultFg, defaultBg;
+        vterm_state_get_default_colors(vterm_obtain_state(mVt), &defaultFg, &defaultBg);
+        if (fgRed < 0)
+            cell.fg = defaultFg;
+        else
+            vterm_color_rgb(&cell.fg, fgRed, fgGreen, fgBlue);
+        if (bgRed < 0)
+            cell.bg = defaultBg;
+        else
+            vterm_color_rgb(&cell.bg, bgRed, bgGreen, bgBlue);
 
         // Get attributes
         cell.attrs.bold = env->GetBooleanField(screenCell, boldField);

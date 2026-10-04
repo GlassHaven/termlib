@@ -24,6 +24,7 @@ import android.util.Log
 import android.view.Choreographer
 import androidx.annotation.VisibleForTesting
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -643,6 +644,10 @@ internal class TerminalEmulatorImpl(
     private val terminalNativeDelegate = lazy {
         TerminalNative(this, enableAltScreen).apply {
             resize(initialRows, initialCols)
+            // Native starts on libvterm's stock colours; without this, output
+            // before the first setDefaultColors resolves "default" to them, and
+            // the scrollback stores that RGB.
+            setDefaultColors(defaultForeground.toArgb(), defaultBackground.toArgb())
             if (setBoldHighbright(boldAsBright) != 0) {
                 Log.e(TAG, "Failed to set boldAsBright=$boldAsBright")
             }
@@ -1070,7 +1075,14 @@ internal class TerminalEmulatorImpl(
                 emptyList()
             }
 
-            val line = TerminalLine(row = -1, cells = cellList, softWrapped = softWrapped, semanticSegments = line0Segments)
+            val line = TerminalLine(
+                row = -1,
+                cells = cellList,
+                softWrapped = softWrapped,
+                semanticSegments = line0Segments,
+                pushedDefaultFg = currentDefaultForeground,
+                pushedDefaultBg = currentDefaultBackground,
+            )
 
             scrollback.add(line)
             if (scrollback.size > maxScrollbackLines) {
@@ -1156,17 +1168,22 @@ internal class TerminalEmulatorImpl(
                 line = line.copy(cells = line.cells.subList(split, contentWidth).toList())
             }
 
-            // Convert TerminalLine.Cell back to ScreenCell (reverse of pushScrollbackLine)
+            // Convert TerminalLine.Cell back to ScreenCell (reverse of pushScrollbackLine).
+            // A red channel of DEFAULT_COLOR hands native the terminal's default
+            // colour: cells pushed with the default come back as the default, so
+            // they follow the current theme rather than the one at push time.
+            fun channel(color: Color, pushedDefault: Color?, value: Float) =
+                if (color == pushedDefault) DEFAULT_COLOR else (value * 255).toInt()
             for (i in 0 until minOf(cols, cells.size)) {
                 val cell = line.cells.getOrNull(i)
                 if (cell != null) {
                     cells[i] = ScreenCell(
                         char = cell.char,
                         combiningChars = cell.combiningChars,
-                        fgRed = (cell.fgColor.red * 255).toInt(),
+                        fgRed = channel(cell.fgColor, line.pushedDefaultFg, cell.fgColor.red),
                         fgGreen = (cell.fgColor.green * 255).toInt(),
                         fgBlue = (cell.fgColor.blue * 255).toInt(),
-                        bgRed = (cell.bgColor.red * 255).toInt(),
+                        bgRed = channel(cell.bgColor, line.pushedDefaultBg, cell.bgColor.red),
                         bgGreen = (cell.bgColor.green * 255).toInt(),
                         bgBlue = (cell.bgColor.blue * 255).toInt(),
                         bold = cell.bold,
@@ -1177,15 +1194,15 @@ internal class TerminalEmulatorImpl(
                         width = cell.width,
                     )
                 } else {
-                    // Fill remaining columns with empty cells using current defaults
+                    // Fill remaining columns with empty default-coloured cells
                     cells[i] = ScreenCell(
                         char = ' ',
-                        fgRed = (currentDefaultForeground.red * 255).toInt(),
-                        fgGreen = (currentDefaultForeground.green * 255).toInt(),
-                        fgBlue = (currentDefaultForeground.blue * 255).toInt(),
-                        bgRed = (currentDefaultBackground.red * 255).toInt(),
-                        bgGreen = (currentDefaultBackground.green * 255).toInt(),
-                        bgBlue = (currentDefaultBackground.blue * 255).toInt(),
+                        fgRed = DEFAULT_COLOR,
+                        fgGreen = 0,
+                        fgBlue = 0,
+                        bgRed = DEFAULT_COLOR,
+                        bgGreen = 0,
+                        bgBlue = 0,
                     )
                 }
             }
@@ -1921,6 +1938,9 @@ internal class TerminalEmulatorImpl(
     companion object {
         private const val TAG = "TerminalEmulatorImpl"
         private const val MAX_URL_SCAN_CONTINUATION_ROWS = 6
+
+        /** ScreenCell red channel meaning "the terminal's default colour" (Terminal.cpp pop). */
+        private const val DEFAULT_COLOR = -1
     }
 }
 
