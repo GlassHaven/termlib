@@ -9,19 +9,21 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * The second half of the keyboard-toggle artifact (the cursor half is pinned
- * by KeyboardGrowScrollbackTest): a full-screen TUI with an incremental
- * line-diff renderer — opencode runs on Ink, whose log-update render skips
- * writing any line whose new text equals the previous frame's text at that
- * index. A rows-only grow that backfills scrollback reflows the live content
- * DOWN under the app; the app's diff has no way to know, so every line it
- * skips leaves the popped scrollback stranded in the grid where the app's
- * model wants blank (or its own) content.
+ * Keyboard toggles under a full-screen TUI with an incremental line-diff
+ * renderer — opencode runs on Ink, whose log-update render skips writing any
+ * line whose new text equals the previous frame's text at that index, and
+ * finds the frame top by moving up from the cursor.
  *
- * The UML guest console sets backfillScrollbackOnGrow=false: the grow then
- * anchors the screen at the top with blank rows at the bottom — the layout
- * the diff renderer's model already assumes — and the app's WINCH repaint
- * fills the new rows without stale remnants.
+ * A rows-only grow that backfills scrollback reflows the live content DOWN.
+ * As long as the cursor moves down with its line (KeyboardGrowScrollbackTest),
+ * Ink's relative walk lands on the frame's real top and every skipped line is
+ * one the app actually wrote, so the repaint is exact. When the cursor was
+ * held at its pre-grow cell instead, the walk started 17 rows high and each
+ * skipped line stranded popped scrollback in the grid.
+ *
+ * The UML guest console also sets backfillScrollbackOnGrow=false: the grow
+ * then anchors the screen at the top with blank rows at the bottom, and the
+ * app's WINCH repaint fills the new rows without stale remnants.
  *
  * The Ink repaint is simulated with its actual move vocabulary: relative
  * cursorUp to the frame top, then per row cursorNextLine on skip, or
@@ -113,12 +115,12 @@ class GrowBackfillDiffRenderTest {
     }
 
     /**
-     * Characterization: with the default backfill on, the grow pops scrollback
-     * into the top rows and an Ink-style diff repaint strands it in every
-     * skipped line — the mechanism behind the user-visible artifact.
+     * With the default backfill on, the grow pops scrollback into the top rows
+     * and moves the cursor down with its line, so an Ink-style diff repaint
+     * still produces exactly its intended frame.
      */
     @Test
-    fun `backfilled grow strands popped rows under a diff-render repaint`() = runBlocking {
+    fun `diff-render repaint after a backfilled grow leaves no stale rows`() = runBlocking {
         val emulator = createEmulator(initialRows = 23, initialCols = 51)
         val prev = writeFramedScreen(emulator)
         assertEquals("precondition: 20 lines in scrollback", 20, emulator.snapshot.value.scrollback.size)
@@ -127,17 +129,17 @@ class GrowBackfillDiffRenderTest {
         emulator.resize(40, 51)
         refresh(emulator)
         assertEquals("backfilled grow pops 17 rows", 3, emulator.snapshot.value.scrollback.size)
-        assertEquals("cursor stays at its pre-grow cell", 22 to 0, nativeCursor(emulator))
+        assertEquals("cursor moves down with its line", 39 to 0, nativeCursor(emulator))
 
         val newFrame = expectedGrowFrame(prev)
         inkRepaint(emulator, prev, newFrame)
 
         val grid = visibleText(emulator)
         val stale = grid.indices.filter { grid[it] != newFrame.getOrElse(it) { "" } }
-        org.junit.Assert.assertTrue(
-            "expected the backfill artifact (stale rows under a diff-render repaint), got stale=$stale " +
-                "grid=${grid.joinToString("|")} expected=${newFrame.joinToString("|")}",
-            stale.contains(5) && stale.contains(10),
+        assertEquals(
+            "stale rows under a diff-render repaint: grid=${grid.joinToString("|")}",
+            emptyList<Int>(),
+            stale,
         )
     }
 

@@ -553,15 +553,6 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
   VTermPos old_cursor = statefields->pos;
   VTermPos new_cursor = { -1, -1 };
 
-  /* HAVEN PATCH (#478 interaction): the backfill loop below steps the cursor
-   * back up one row per restored line so the app-visible cursor stays at its
-   * pre-resize cell. The cursor therefore no longer tracks the content
-   * movement, breaking the delta images are re-anchored by further down.
-   * Count the compensating decrements so image_resize still sees where the
-   * content went (zero when the loop does not run, e.g. the alternate
-   * screen). */
-  int image_row_comp = 0;
-
 #ifdef DEBUG_REFLOW
   fprintf(stderr, "Resizing from %dx%d to %dx%d; cursor was at (%d,%d)\n",
       old_cols, old_rows, new_cols, new_rows, old_cursor.col, old_cursor.row);
@@ -801,24 +792,8 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
         clearcell(screen, &new_buffer[pos.row * new_cols + pos.col]);
       new_row--;
 
-      if(active) {
+      if(active)
         statefields->pos.row++;
-        /* HAVEN PATCH: the reflow walk mapped the cursor into the shifted
-         * frame — it followed its line down as history was restored above.
-         * A cursor-tracking TUI repaints relative to where its own model
-         * still holds the cursor, the pre-resize cell, so walking the
-         * cursor down with the backfill desyncs the app by exactly the
-         * restored row count (opencode's post-grow repaint landed 17 rows
-         * off, stranding stale frame rows mid-screen while the keyboard
-         * hid). Step the cursor back up one row per restored line so it
-         * stays at the cell the app believes it is on; the partial-fill
-         * path below subtracts the remaining shift, so every grow ends
-         * with the cursor at its pre-resize cell. */
-        if(new_cursor.row >= 0) {
-          new_cursor.row--;
-          image_row_comp++;
-        }
-      }
     }
   }
   if(new_row >= 0) {
@@ -837,12 +812,13 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
   }
 
   /* Inline images (#583): images anchored on the old grid move by the cursor
-   * delta; upstream 0.3.9 measures it the same way. With Haven's #478 cursor
-   * compensation the cursor no longer tracks content, so the decrements are
-   * added back to recover the same content delta upstream would measure. */
+   * delta, as upstream 0.3.9 measures it. The cursor follows its line through
+   * the backfill, so the delta is the content shift. (Haven briefly kept the
+   * cursor at its pre-resize cell instead; that stranded line editors such as
+   * RouterOS's console, which redraw the current line in place on SIGWINCH.) */
   if(screen->callbacks && screen->callbacks->image_resize)
     screen->callbacks->image_resize(bufidx,
-        new_cursor.row + image_row_comp - old_cursor.row,
+        new_cursor.row - old_cursor.row,
         new_rows, new_cols, screen->cbdata);
 
   vterm_allocator_free(screen->vt, old_buffer);
