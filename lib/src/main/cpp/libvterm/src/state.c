@@ -2035,11 +2035,23 @@ static int on_resize(int rows, int cols, void *user)
     state->tabstops = newtabstops;
   }
 
+  int oldrows = state->rows;
+
   state->rows = rows;
   state->cols = cols;
 
+  // A region whose bottom sat on the old last row stays anchored to the last
+  // row. DECSTBM clamps "\e[1;9999r" (RouterOS) to the row count at the time,
+  // so without this a later grow leaves the bottom rows outside the region and
+  // linefeeds there stop scrolling.
+  if(state->scrollregion_bottom == oldrows)
+    state->scrollregion_bottom = state->scrollregion_top == 0 ? -1 : state->rows;
   if(state->scrollregion_bottom > -1)
     UBOUND(state->scrollregion_bottom, state->rows);
+  if(SCROLLREGION_BOTTOM(state) <= state->scrollregion_top) {
+    state->scrollregion_top    = 0;
+    state->scrollregion_bottom = -1;
+  }
   if(state->scrollregion_right > -1)
     UBOUND(state->scrollregion_right, state->cols);
 
