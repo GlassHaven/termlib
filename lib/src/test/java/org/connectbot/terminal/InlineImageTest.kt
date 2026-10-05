@@ -791,6 +791,41 @@ class InlineImageTest {
         assertEquals(1, terminal.imageStore.assets.size)
     }
 
+    /**
+     * A large multi-placement stream must place identically regardless of how the
+     * transport batches writeInput: chunk-invariance at whole, large and odd sizes.
+     */
+    @Test
+    fun largeKittyStreamPlacesIdenticallyAcrossChunkSizes() {
+        val raw = Base64.getEncoder().encodeToString(ByteArray(4 * 4 * 4) { -1 })
+        val images = (1..3).joinToString("") { i ->
+            (1..i).joinToString("") { "\r\n" } +
+                kitty("a=T,f=32,s=4,v=4,q=2,c=4,r=4", raw) + "after$i\r\n"
+        }
+        val stream = images.toByteArray()
+        fun replay(maxChunk: Int): TerminalSnapshot {
+            val rng = java.util.Random(20261005)
+            val emulator = emulator()
+            var offset = 0
+            while (offset < stream.size) {
+                val size = minOf(maxChunk, 1 + rng.nextInt(maxChunk), stream.size - offset)
+                emulator.writeInput(stream.copyOfRange(offset, offset + size))
+                offset += size
+            }
+            return emulator.flush().also { shadowOf(Looper.getMainLooper()).idle() }
+        }
+        fun imageSlices(snapshot: TerminalSnapshot) =
+            (snapshot.scrollback + snapshot.lines).count { it.images.isNotEmpty() }
+
+        val whole = replay(stream.size)
+        val big = replay(8192)
+        val odd = replay(97)
+        assertTrue("chunked replay placed no images", imageSlices(whole) > 0)
+        assertEquals(imageSlices(whole), imageSlices(big))
+        assertEquals(imageSlices(whole), imageSlices(odd))
+        assertEquals(whole.cursorRow to whole.cursorCol, odd.cursorRow to odd.cursorCol)
+    }
+
     @Test
     fun imagesSurviveScrollbackResizeAndAlternateScreenRoundTrip() {
         val terminal = emulator()
