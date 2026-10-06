@@ -45,7 +45,7 @@ static thread_local jcharArray tls_charArray = nullptr;
 static thread_local jsize tls_charArraySize = 0;
 
 // Terminal implementation
-Terminal::Terminal(JNIEnv* env, jobject callbacks, int rows, int cols, bool enableAltScreen)
+Terminal::Terminal(JNIEnv* env, jobject callbacks, int rows, int cols, bool enableAltScreen, const char* xtversion)
     : mRows(rows), mCols(cols) {
 
     LOGD("Terminal constructor: rows=%d, cols=%d, altscreen=%d", rows, cols, enableAltScreen);
@@ -252,6 +252,12 @@ Terminal::Terminal(JNIEnv* env, jobject callbacks, int rows, int cols, bool enab
     };
     mStateFallbacks = fallbacks;
     vterm_state_set_unrecognised_fallbacks(state, &mStateFallbacks, this);
+
+    // XTVERSION identity (CSI > 0 q). Hosting terminal's identity, e.g.
+    // "Haven(5.89.18)"; nullptr keeps libvterm's own "libvterm(0.3)" reply.
+    if (xtversion && xtversion[0]) {
+        vterm_state_set_xtversion(state, xtversion);
+    }
 
     // Set up selection callbacks for OSC 52 clipboard support. These follow the
     // same no-synchronous-reentry rule as screen callbacks above.
@@ -1424,8 +1430,16 @@ void Terminal::resolveColor(const VTermColor& color, uint8_t& r, uint8_t& g, uin
 extern "C" {
 
 JNIEXPORT jlong JNICALL
-Java_org_connectbot_terminal_TerminalNative_nativeInit(JNIEnv* env, jobject /* thiz */, jobject callbacks, jboolean enableAltScreen) {
-    auto* term = new Terminal(env, callbacks, 24, 80, enableAltScreen);
+Java_org_connectbot_terminal_TerminalNative_nativeInit(JNIEnv* env, jobject /* thiz */, jobject callbacks,
+                                                       jboolean enableAltScreen, jstring xtversion) {
+    const char* xtversionChars = nullptr;
+    if (xtversion != nullptr) {
+        xtversionChars = env->GetStringUTFChars(xtversion, nullptr);
+    }
+    auto* term = new Terminal(env, callbacks, 24, 80, enableAltScreen, xtversionChars);
+    if (xtversionChars != nullptr) {
+        env->ReleaseStringUTFChars(xtversion, xtversionChars);
+    }
     return reinterpret_cast<jlong>(term);
 }
 

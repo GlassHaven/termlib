@@ -79,6 +79,9 @@ struct VTermState
   int scrollregion_right; /* -1 means unbounded */
 #define SCROLLREGION_RIGHT(state) ((state)->mode.leftrightmargin && (state)->scrollregion_right > -1 ? (state)->scrollregion_right : (state)->cols)
 
+  /* Hosting terminal identity reported by XTVERSION (CSI > q); NULL = libvterm default */
+  char *xtversion;
+
   /* Bitvector of tab stops */
   unsigned char *tabstops;
 

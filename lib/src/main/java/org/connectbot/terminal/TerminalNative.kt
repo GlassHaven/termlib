@@ -39,11 +39,15 @@ import java.nio.ByteBuffer
  * therefore this class's problem, and [withPtr] is where it is solved — see
  * the note there before adding a method that touches [nativePtr].
  */
-internal class TerminalNative(callbacks: TerminalCallbacks, enableAltScreen: Boolean = true) : AutoCloseable {
+internal class TerminalNative(
+    callbacks: TerminalCallbacks,
+    enableAltScreen: Boolean = true,
+    xtversion: String? = null,
+) : AutoCloseable {
     private var nativePtr: Long = 0
 
     init {
-        nativePtr = nativeInit(callbacks, enableAltScreen)
+        nativePtr = nativeInit(callbacks, enableAltScreen, xtversion)
         if (nativePtr == 0L) {
             throw RuntimeException("Failed to initialize native terminal")
         }
@@ -250,7 +254,7 @@ internal class TerminalNative(callbacks: TerminalCallbacks, enableAltScreen: Boo
     }
 
     // Native method declarations
-    private external fun nativeInit(callbacks: TerminalCallbacks, enableAltScreen: Boolean): Long
+    private external fun nativeInit(callbacks: TerminalCallbacks, enableAltScreen: Boolean, xtversion: String?): Long
     private external fun nativeDestroy(ptr: Long): Int
     private external fun nativeWriteInputBuffer(ptr: Long, buffer: ByteBuffer, length: Int): Int
     private external fun nativeWriteInputArray(ptr: Long, data: ByteArray, offset: Int, length: Int): Int

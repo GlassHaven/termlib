@@ -119,6 +119,7 @@ static VTermState *vterm_state_new(VTerm *vt)
 
 INTERNAL void vterm_state_free(VTermState *state)
 {
+  vterm_allocator_free(state->vt, state->xtversion);
   vterm_allocator_free(state->vt, state->tabstops);
   vterm_allocator_free(state->vt, state->lineinfos[BUFIDX_PRIMARY]);
   if(state->lineinfos[BUFIDX_ALTSCREEN])
@@ -973,8 +974,28 @@ static void request_dec_mode(VTermState *state, int num)
 
 static void request_version_string(VTermState *state)
 {
+  if(state->xtversion) {
+    vterm_push_output_sprintf_str(state->vt, C1_DCS, true, ">|%s", state->xtversion);
+    return;
+  }
   vterm_push_output_sprintf_str(state->vt, C1_DCS, true, ">|libvterm(%d.%d)",
       VTERM_VERSION_MAJOR, VTERM_VERSION_MINOR);
+}
+
+void vterm_state_set_xtversion(VTermState *state, const char *identity)
+{
+  vterm_allocator_free(state->vt, state->xtversion);
+  state->xtversion = NULL;
+  if(!identity || !identity[0])
+    return;
+  size_t len = strlen(identity);
+  if(len > 128)
+    len = 128; /* keep the reply short; no terminal's is much longer */
+  state->xtversion = vterm_allocator_malloc(state->vt, len + 1);
+  if(!state->xtversion)
+    return;
+  memcpy(state->xtversion, identity, len);
+  state->xtversion[len] = 0;
 }
 
 static int on_csi(const char *leader, const long args[], int argcount, const char *intermed, char command, void *user)
@@ -1455,6 +1476,10 @@ static int on_csi(const char *leader, const long args[], int argcount, const cha
     break;
 
   case LEADER('>', 0x71): // XTVERSION - xterm query version string
+    // mode 0 (or omitted) asks for the version string; other modes are out
+    // of scope, so ignore them like kitty does
+    if(argcount > 0 && CSI_ARG_OR(args[0], 0) != 0)
+      break;
     request_version_string(state);
     break;
 

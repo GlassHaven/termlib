@@ -48,7 +48,7 @@ private:
 
 class Terminal {
 public:
-    Terminal(JNIEnv* env, jobject callbacks, int rows = 24, int cols = 80, bool enableAltScreen = true);
+    Terminal(JNIEnv* env, jobject callbacks, int rows = 24, int cols = 80, bool enableAltScreen = true, const char* xtversion = nullptr);
     ~Terminal();
 
     // Input handling - receives data from PTY/transport

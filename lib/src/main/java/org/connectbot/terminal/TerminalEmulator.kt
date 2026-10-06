@@ -364,6 +364,10 @@ class TerminalEmulatorFactory {
          *                           ring before the oldest entries are evicted. Defaults to 1000;
          *                           hosts that want a longer history (or want to expose the limit
          *                           to users) can override.
+         * @param xtversion Identity reported by XTVERSION (CSI > 0 q), e.g. "Haven(5.89.18)".
+         *                  Wrapping hosts should set this so multiplexers probing XTVERSION
+         *                  (tmux, ssh_client) see the hosting terminal, not libvterm. Defaults
+         *                  to null, which keeps the historical libvterm(0.3) reply.
          */
         fun create(
             looper: Looper = Looper.getMainLooper(),
@@ -381,6 +385,7 @@ class TerminalEmulatorFactory {
             boldAsBright: Boolean = true,
             maxScrollbackLines: Int = 1000,
             inlineImages: InlineImages = InlineImages.Off,
+            xtversion: String? = null,
         ): TerminalEmulator = TerminalEmulatorImpl(
             looper = looper,
             initialRows = initialRows,
@@ -397,6 +402,7 @@ class TerminalEmulatorFactory {
             boldAsBright = boldAsBright,
             maxScrollbackLines = maxScrollbackLines,
             inlineImages = inlineImages,
+            xtversion = xtversion,
         )
     }
 }
@@ -430,6 +436,7 @@ class TerminalEmulatorFactory {
  * @param onResize Optional callback for terminal resize
  * @param onClipboardCopy Optional callback for OSC 52 clipboard copy operations
  * @param onProgressChange Optional callback for OSC 9;4 progress reporting
+ * @param xtversion Identity reported by XTVERSION (CSI > 0 q); null keeps libvterm's own reply
  */
 internal class TerminalEmulatorImpl(
     private val looper: Looper = Looper.getMainLooper(),
@@ -447,6 +454,7 @@ internal class TerminalEmulatorImpl(
     override val boldAsBright: Boolean = true,
     maxScrollbackLines: Int = 1000,
     inlineImages: InlineImages = InlineImages.Off,
+    xtversion: String? = null,
 ) : TerminalEmulator,
     TerminalCallbacks {
 
@@ -641,7 +649,7 @@ internal class TerminalEmulatorImpl(
     // *construct* a native terminal for the sole purpose of destroying it,
     // on an emulator that was created and dropped without being used.
     private val terminalNativeDelegate = lazy {
-        TerminalNative(this, enableAltScreen).apply {
+        TerminalNative(this, enableAltScreen, xtversion = xtversion).apply {
             resize(initialRows, initialCols)
             if (setBoldHighbright(boldAsBright) != 0) {
                 Log.e(TAG, "Failed to set boldAsBright=$boldAsBright")

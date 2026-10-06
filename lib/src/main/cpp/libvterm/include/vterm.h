@@ -466,6 +466,9 @@ void *vterm_state_get_cbdata(VTermState *state);
 void  vterm_state_set_unrecognised_fallbacks(VTermState *state, const VTermStateFallbacks *fallbacks, void *user);
 void *vterm_state_get_unrecognised_fbdata(VTermState *state);
 
+/* Set the identity reported by XTVERSION (CSI > 0 q); NULL/empty restores the default libvterm reply */
+void  vterm_state_set_xtversion(VTermState *state, const char *identity);
+
 void vterm_state_reset(VTermState *state, int hard);
 void vterm_state_get_cursorpos(const VTermState *state, VTermPos *cursorpos);
 void vterm_state_get_default_colors(const VTermState *state, VTermColor *default_fg, VTermColor *default_bg);
