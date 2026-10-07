@@ -43,6 +43,11 @@ internal data class TerminalLine(
     // Inline images visible on this line (#583), sorted by z band then asset id.
     // Filled in by the emulator when building a snapshot; empty otherwise.
     val images: List<ImageSlice> = emptyList(),
+    // Scrollback lines only: the default fg/bg in effect when the line was
+    // pushed. Native resolves default colours to RGB on the way out, so these
+    // are what lets a backfill pop hand the default back as a default.
+    val pushedDefaultFg: Color? = null,
+    val pushedDefaultBg: Color? = null,
 ) {
     /**
      * Get the text content of this line as a string.

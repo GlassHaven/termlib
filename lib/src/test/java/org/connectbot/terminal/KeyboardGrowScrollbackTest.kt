@@ -9,21 +9,18 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * Real-user keyboard hide/show on a full-screen TUI living in the primary
- * buffer (opencode over the UML console): showing the keyboard shrinks the
- * grid (rows overflow into scrollback), hiding it grows the grid again — and
- * the app's repaint then lands in the wrong place, leaving stale rows
- * stranded mid-screen ("keyboard hide/show has no effect").
+ * Keyboard hide/show on the primary buffer: showing the keyboard shrinks the
+ * grid (rows overflow into scrollback), hiding it grows the grid again and
+ * libvterm backfills the new rows from scrollback, shifting the screen down.
  *
- * A cursor-tracking TUI repaints relative to the cursor position its own
- * model holds, which is where its last write left the cursor. After a grow
- * the physical (native) cursor must therefore still be at that cell for the
- * app's repaint to land where the app thinks it is writing.
+ * The cursor has to move with its line. Programs that redraw in place on
+ * SIGWINCH (RouterOS's console, shell line editors) write "\r<prompt>\e[K"
+ * at the cursor; if the cursor stayed at its pre-grow cell while the content
+ * moved, that redraw — and every line of output after it — lands on top of
+ * restored history instead of on the prompt's own line.
  *
- * The Kotlin snapshot cursor is not the right probe for this: resize emits
- * no movecursor callback, so it never moves on a grow and cannot catch the
- * desync. The probe is DSR (CSI 6n) — the emulator answers from the native
- * state cursor over the keyboard path, the same position the app's escape
+ * The probe is DSR (CSI 6n): the emulator answers from the native state
+ * cursor over the keyboard path, the same position the remote's escape
  * semantics resolve against.
  */
 @RunWith(AndroidJUnit4::class)
@@ -65,58 +62,59 @@ class KeyboardGrowScrollbackTest {
     private fun String.escapeRepr() =
         map { if (it.code < 32) "\\u%04x".format(it.code) else it }.joinToString("")
 
-    @Test
-    fun `rows-only grow with scrollback keeps the cursor at its pre-grow cell`() = runBlocking {
+    /** 43 labelled lines on a 23x51 grid: L00..L19 in scrollback, L20..L42 on screen. */
+    private fun filledEmulator(): TerminalEmulatorImpl {
         val emulator = createEmulator(initialRows = 23, initialCols = 51)
-        // 43 labelled lines: 20 flow into scrollback, 20..42 sit on the
-        // 23-row screen, cursor ends just below the last line.
         for (i in 0..42) {
             emulator.writeInput("L%02d".format(i).toByteArray())
             if (i < 42) emulator.writeInput("\r\n".toByteArray())
         }
-        delay(120)
-
-        val beforeText = visibleText(emulator)
-        org.junit.Assert.assertEquals(
+        assertEquals(
             "precondition: screen should hold L20..L42",
-            (20..42).joinToString("\n") { "L%02d".format(it) }.lines(),
-            beforeText.lines(),
+            (20..42).map { "L%02d".format(it) },
+            visibleText(emulator).lines(),
         )
-        // Read the snapshot AFTER processing so scrollback/cursor are fresh.
-        val before = emulator.snapshot.value
-        val beforeScrollback = before.scrollback.size
-        val beforeNative = nativeCursor(emulator)
-        org.junit.Assert.assertEquals(
-            "precondition: native cursor must sit at the pre-grow cell (22,3)",
-            22 to 3,
-            beforeNative,
-        )
+        assertEquals("precondition: native cursor after L42", 22 to 3, nativeCursor(emulator))
+        return emulator
+    }
 
-        // Keyboard hides: the grid grows back to 40 rows with scrollback
-        // available to backfill from.
+    @Test
+    fun `rows-only grow with scrollback moves the cursor with its line`() = runBlocking {
+        val emulator = filledEmulator()
+
+        // Keyboard hides: 23 -> 40 rows, 17 rows backfilled from scrollback.
         emulator.resize(40, 51)
         delay(120)
 
-        val afterNative = nativeCursor(emulator)
-        val after = emulator.snapshot.value
-        println("GROW-TEST scrollback $beforeScrollback -> ${after.scrollback.size}")
-        println("GROW-TEST native $beforeNative -> $afterNative")
-        println("GROW-TEST display (${before.cursorRow},${before.cursorCol}) -> (${after.cursorRow},${after.cursorCol})")
         val lines = visibleText(emulator).lines()
-        lines.forEachIndexed { i, l -> println("GROW-TEST row %02d: %s".format(i, l)) }
-
-        // The cursor must not have moved with the resize: a TUI that is
-        // about to repaint relative to its tracked position needs the
-        // physical cursor where its model thinks it is.
-        assertEquals(
-            "rows-only grow must leave the native cursor at its pre-grow cell",
-            beforeNative,
-            afterNative,
-        )
+        assertEquals("backfill restores L03..L42", (3..42).map { "L%02d".format(it) }, lines)
+        val (row, col) = nativeCursor(emulator)
+        assertEquals("cursor stays at the end of L42", 3, col)
+        assertEquals("cursor row holds L42", "L42", lines[row])
+        val snapshot = emulator.snapshot.value
         assertEquals(
             "display cursor must agree with the native cursor after the grow",
-            afterNative,
-            after.cursorRow to after.cursorCol,
+            row to col,
+            snapshot.cursorRow to snapshot.cursorCol,
+        )
+    }
+
+    @Test
+    fun `line editor redraw after grow lands on its own line`() = runBlocking {
+        val emulator = filledEmulator()
+        emulator.resize(40, 51)
+        delay(120)
+
+        // RouterOS on SIGWINCH: redraw the prompt line in place, then the
+        // command runs and prints below it.
+        emulator.writeInput("\r> \u001b[Kcmd\r\nout1\r\nout2\r\n> ".toByteArray())
+        delay(120)
+
+        val lines = visibleText(emulator).lines()
+        assertEquals(
+            "history intact, prompt redrawn over L42, output below",
+            (6..41).map { "L%02d".format(it) } + listOf("> cmd", "out1", "out2", ">"),
+            lines,
         )
     }
 }

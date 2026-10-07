@@ -46,3 +46,28 @@ RESIZE 30,100
 PUSH "C"
   putglyph 0x43 1 0,80
   ?cursor = 0,81
+
+!Resize grow keeps a bottom-anchored scroll region at the bottom
+RESET
+WANTSTATE s
+PUSH "\e[1;9999r"
+RESIZE 35,80
+PUSH "\e[9999B\n"
+  scrollrect 0..35,0..80 => +1,+0
+  ?cursor = 34,0
+
+!Resize grow keeps a bottom-anchored partial scroll region at the bottom
+RESET
+PUSH "\e[3;9999r"
+RESIZE 40,80
+PUSH "\e[9999B\n"
+  scrollrect 2..40,0..80 => +1,+0
+  ?cursor = 39,0
+
+!Resize grow leaves an interior scroll region alone
+RESET
+PUSH "\e[1;10r"
+RESIZE 45,80
+PUSH "\e[10H\n"
+  scrollrect 0..10,0..80 => +1,+0
+  ?cursor = 9,0
