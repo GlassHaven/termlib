@@ -253,22 +253,25 @@ internal fun AccessibilityOverlay(
  */
 private fun buildSemanticAnnotatedString(line: TerminalLine): AnnotatedString = buildAnnotatedString {
     var lastEndCol = 0
+    // This fork keeps one Cell entry per cell (a wide glyph is a single entry
+    // with width=2), unlike upstream's per-column PackedCells, so the column
+    // count is the sum of cell widths.
+    val columns = line.cells.sumOf { if (it.width > 0) it.width else 1 }
 
     for (segment in line.semanticSegments.sortedBy { it.startCol }) {
+        val start = segment.startCol.coerceIn(0, columns).coerceAtLeast(lastEndCol)
+        val end = segment.endCol.coerceIn(0, columns)
+        if (end < start || (end == start && segment.semanticType != SemanticType.COMMAND_FINISHED)) continue
+
+        // Semantic offsets are cell columns, not UTF-16 offsets into line.text.
         // Add any gap text before this segment
-        if (segment.startCol > lastEndCol) {
-            val gapText = line.text.substring(
-                lastEndCol,
-                segment.startCol.coerceAtMost(line.text.length),
-            )
+        if (start > lastEndCol) {
+            val gapText = line.cells.cellText(lastEndCol, start)
             append(gapText)
         }
 
         // Get text for this segment
-        val segmentText = line.text.substring(
-            segment.startCol.coerceAtMost(line.text.length),
-            segment.endCol.coerceAtMost(line.text.length),
-        )
+        val segmentText = line.cells.cellText(start, end)
 
         // Append text with semantic annotation
         when (segment.semanticType) {
@@ -318,13 +321,32 @@ private fun buildSemanticAnnotatedString(line: TerminalLine): AnnotatedString = 
             append(" ")
         }
 
-        lastEndCol = segment.endCol
+        lastEndCol = end
     }
 
     // Add any remaining text after last segment
-    if (lastEndCol < line.text.length) {
-        val remainingText = line.text.substring(lastEndCol)
+    if (lastEndCol < columns) {
+        val remainingText = line.cells.cellText(lastEndCol, columns)
         append(remainingText)
+    }
+}
+
+/**
+ * Slice [start, end) by terminal cell columns, not UTF-16 offsets: a wide
+ * glyph is one entry occupying two columns, and combining marks ride along
+ * with their base cell. Image placeholder cells render as a space, matching
+ * [TerminalLine.text].
+ */
+private fun List<TerminalLine.Cell>.cellText(start: Int, end: Int): String = buildString {
+    var col = 0
+    for (cell in this@cellText) {
+        if (col >= end) break
+        val cellEnd = col + if (cell.width > 0) cell.width else 1
+        if (cellEnd > start) {
+            append(if (cell.isImagePlaceholder) ' ' else cell.char)
+            cell.combiningChars.forEach { append(it) }
+        }
+        col = cellEnd
     }
 }
 
