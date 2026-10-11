@@ -1463,6 +1463,42 @@ internal fun TerminalWithAccessibility(
                 return@LaunchedEffect
             }
 
+            // #687: rotation-back measures the window at its full height for
+            // one frame — the new configuration's height arrives before the IME
+            // inset re-dispatches — so the row count is a phantom grow (40 rows
+            // where the settled grid is 23, imeBottom=0 while the keyboard is
+            // up). Propagating it SIGWINCHes the server into repainting its
+            // prompt for the oversized grid; the later shrink strands that
+            // repaint at the top row as a duplicate prompt. Hold the grow until
+            // the inset re-arrives (which re-runs this effect with a real
+            // measurement). Bounded: if the inset never comes back the zero is
+            // genuine (a real hide the host hasn't reflected yet) and we accept
+            // the grow rather than strand the grid at the old, too-small size.
+            if (
+                isRotationTransientRows(
+                    reflowToKeyboard = reflowToKeyboard,
+                    shouldShowIme = shouldShowIme,
+                    imeBottomPx = ViewCompat.getRootWindowInsets(hostView)
+                        ?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0,
+                    growingRows = newRows > dimensions.rows,
+                )
+            ) {
+                delay(ROTATION_INSET_SETTLE_MS)
+                val nowImeBottom = ViewCompat.getRootWindowInsets(hostView)
+                    ?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0
+                if (nowImeBottom > 0) {
+                    // The inset re-arrived during the hold. Its arrival also
+                    // changed availableHeight, which re-ran this effect with
+                    // the real (smaller) row count — but that re-run is what
+                    // carries the fix, so drop this phantom pass.
+                    return@LaunchedEffect
+                }
+                // Still zero after the settle window: the hide is genuine (the
+                // host just hasn't reflected it in showSoftKeyboard) — accept
+                // the grow rather than strand the grid at the old, too-small
+                // size.
+            }
+
             // Debounce rapid size changes (IME insets animation, pinch-to-zoom).
             // The LaunchedEffect cancels in flight when keys change, so only the
             // final stable size completes the delay and reaches the emulator.
@@ -3621,6 +3657,16 @@ internal const val KEYBOARD_HIDE_RESIZE_DEBOUNCE_MS = 400L
 internal const val IME_RESTORE_GRACE_MS = 600L
 
 /**
+ * How long to hold a rotation's phantom row grow (#687) waiting for the IME
+ * inset to re-dispatch after the new configuration's height arrives. Device-
+ * verified the inset re-arrives within ~458ms of the phantom sample; the hold
+ * only ever bites the transient (a genuine hide flips shouldShowIme false, so
+ * the predicate is false and nothing is held), so the latency is not paid on
+ * any real path.
+ */
+internal const val ROTATION_INSET_SETTLE_MS = 500L
+
+/**
  * Which debounce a pending PTY resize gets before it is committed (#554): a
  * row grow while reflowed-to-keyboard is keyboard-hide-shaped and waits long
  * enough for a backgrounding's focus loss to arrive; everything else keeps the
@@ -3628,6 +3674,39 @@ internal const val IME_RESTORE_GRACE_MS = 600L
  */
 internal fun resizeDebounceMs(reflowToKeyboard: Boolean, growingRows: Boolean): Long =
     if (reflowToKeyboard && growingRows) KEYBOARD_HIDE_RESIZE_DEBOUNCE_MS else RESIZE_DEBOUNCE_MS
+
+/**
+ * Whether a rotation's transient oversized row sample must be held back from
+ * the emulator + PTY (#687).
+ *
+ * Rotating back to portrait with the soft keyboard up measures the window at
+ * its FULL height for one frame — the new configuration's height arrives
+ * before the IME inset re-dispatches — so the sizing path computes a row count
+ * that is too large (device-verified: 40 rows where the settled grid is 23,
+ * with the IME inset reading 0 while the keyboard is actually up). That
+ * transient reaches the emulator grid AND the PTY; the server SIGWINCH-repaints
+ * its prompt for the oversized grid, and the later shrink strands that repaint
+ * at the top row while the real prompt sits at the bottom — a duplicate prompt
+ * pinned to the top.
+ *
+ * The sample is untrustworthy exactly when the IME is supposed to be shown
+ * ([shouldShowIme]) but its inset reads zero ([imeBottomPx]) — a full-height
+ * window and a visible IME are mutually exclusive, so the zero is the inset
+ * that has not re-arrived yet — and the measurement would GROW the grid
+ * ([growingRows]) into that phantom space. A genuine keyboard hide also reads
+ * [imeBottomPx] == 0, but then [shouldShowIme] is false (the host owns
+ * showSoftKeyboard), so it is never held; a physical keyboard keeps
+ * [shouldShowIme] false for the same reason. Width changes are never held —
+ * the rotation reflow they trigger is wanted.
+ *
+ * Pure so the policy is testable without a device.
+ */
+internal fun isRotationTransientRows(
+    reflowToKeyboard: Boolean,
+    shouldShowIme: Boolean,
+    imeBottomPx: Int,
+    growingRows: Boolean,
+): Boolean = reflowToKeyboard && shouldShowIme && imeBottomPx == 0 && growingRows
 
 /**
  * Vertical distance (px) to translate the rendered grid UP so the bottom-most
