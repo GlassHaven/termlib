@@ -481,10 +481,14 @@ int Terminal::getCellRun(JNIEnv* env, int row, int col, jobject runObject) {
     VTermScreenCell cell;
     vterm_screen_get_cell(mVts, pos, &cell);
 
-    // Collect cells with same attributes. For a placeholder run (see below)
-    // runLength doubles as the UTF-16 write cursor into chars[] and is
-    // rebased to a cell count before it is handed to Kotlin.
+    // Collect cells with same attributes. `runLength` is the UTF-16 write
+    // cursor into chars[] and `runColumns` the number of screen columns the
+    // run covers; they differ once a cell emits a surrogate pair (a >U+FFFF
+    // glyph contributes 2 jchars but 1 column) or is double-width. Kotlin's
+    // updateLine bounds its col walk by the field handed back and advances it
+    // by each cell's width, so it must carry runColumns.
     int runLength = 0;
+    int runColumns = 0;
     jchar chars[256];  // Max run length
 
     // A Kitty unicode-placeholder cell (cell char U+10EEEE) is a marker for an
@@ -547,6 +551,8 @@ int Terminal::getCellRun(JNIEnv* env, int row, int col, jobject runObject) {
             }
         }
 
+        runColumns += currentCell.width;
+
         // Skip next column if this is a wide character
         if (currentCell.width == 2) {
             c++;
@@ -598,6 +604,11 @@ int Terminal::getCellRun(JNIEnv* env, int row, int col, jobject runObject) {
         if (charCount < 256) {
             chars[charCount] = 0;
         }
+    } else {
+        // A normal run may contain surrogate pairs (Nerd Font plane-15 icons)
+        // and double-width cells: rebase the UTF-16 write cursor to the column
+        // count Kotlin's updateLine walks.
+        runLength = runColumns;
     }
 
     if (tls_charArray == nullptr || tls_charArraySize < charCount) {
