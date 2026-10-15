@@ -826,11 +826,16 @@ internal fun TerminalWithAccessibility(
         // Capture the key's value: onDispose reading the `imeInputView` state
         // directly would act on the NEW view when the key changes null→view,
         // tearing down its focus at creation.
+        // Note: do NOT call hideIme() here — AndroidView supplies onReset so
+        // tab switches via key(activeTab.sessionId) reuse the same ImeInputView
+        // without detaching it (#714); calling hideIme() on dispose tore down
+        // the open keyboard only for LaunchedEffect(shouldShowIme) to reopen it
+        // 100ms later. Real window removal already calls hideIme() in
+        // ImeInputView.onDetachedFromWindow().
         val disposingView = imeInputView
         onDispose {
-            Log.d("Terminal", "Disposing Terminal - hiding IME")
+            Log.d("Terminal", "Disposing Terminal - resetting interop view")
             disposingView?.onInteropReset()
-            disposingView?.hideIme()
         }
     }
 
@@ -1099,6 +1104,10 @@ internal fun TerminalWithAccessibility(
                 screenState.scrollbackPosition,
             )
 
+            override fun getVisibleLineTexts(): List<String> = List(screenState.snapshot.rows) { row ->
+                screenState.getVisibleLine(row).text
+            }
+
             override fun shiftSelectionStartByRows(delta: Int) {
                 selectionManager.shiftSelectionStartByRows(delta)
             }
@@ -1330,7 +1339,8 @@ internal fun TerminalWithAccessibility(
     // recur (the #206 follow-up). Sampling only-when-hidden fixes that at the
     // root and also handles rotation (the new orientation's hidden height is
     // sampled the moment the keyboard is down).
-    var maxAvailableHeight by remember { mutableStateOf(0) }
+    val orientation = LocalConfiguration.current.orientation
+    var maxAvailableHeight by remember(orientation) { mutableStateOf(0) }
 
     Box(
         modifier = modifier
@@ -1344,16 +1354,21 @@ internal fun TerminalWithAccessibility(
                 // Compose-side ime inset here. This stops the baseline ever
                 // being seeded from a keyboard-up height (the #206 recurrence).
                 // When opened straight into a keyboard-up state with no hidden
-                // height seen yet, estimate it by adding the IME inset back so
-                // the grid still gets a sane initial size (corrected exactly on
-                // the first keyboard-down).
-                val imeBottom = ViewCompat.getRootWindowInsets(hostView)
+                // height seen yet (or after an orientation change while IME is
+                // open, #714/#715), estimate it by adding the effective IME
+                // inset (imeBottom - navBottom) back so the grid still gets an
+                // accurate initial size without over-counting the navigation bar.
+                val rootInsets = ViewCompat.getRootWindowInsets(hostView)
+                val imeBottom = rootInsets
                     ?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0
-                if (imeBottom == 0) {
-                    maxAvailableHeight = it.height
-                } else if (maxAvailableHeight == 0) {
-                    maxAvailableHeight = it.height + imeBottom
-                }
+                val navBottom = rootInsets
+                    ?.getInsets(WindowInsetsCompat.Type.navigationBars())?.bottom ?: 0
+                maxAvailableHeight = updateMaxAvailableHeight(
+                    currentMaxHeight = maxAvailableHeight,
+                    measuredHeight = it.height,
+                    imeBottomPx = imeBottom,
+                    navBottomPx = navBottom,
+                )
             }
             .then(
                 if (keyboardEnabled) {
@@ -1565,9 +1580,17 @@ internal fun TerminalWithAccessibility(
         // animation not running) and the position is "close" to the bottom — a
         // small drift from 0 that the user didn't intentionally create by a long
         // sustained scroll gesture.
+        // True while the user's finger is actively performing a scroll drag
+        // (single-finger Scroll or two-finger pan). During touch drag,
+        // scrollOffset.snapTo() is used so scrollOffset.isRunning is false —
+        // gating the drift auto-snap on !touchScrollActive prevents streaming
+        // output from yanking the viewport back to 0 as the user scrolls
+        // through lines 1..3 (#717).
+        var touchScrollActive by remember { mutableStateOf(false) }
+
         LaunchedEffect(screenState.snapshot.lines.size, screenState.snapshot.scrollback.size) {
             val pos = screenState.scrollbackPosition
-            if (pos in 1..3 && !scrollOffset.isRunning) {
+            if (pos in 1..3 && !scrollOffset.isRunning && !touchScrollActive) {
                 // Small drift — snap back to bottom
                 screenState.scrollToBottom()
                 scrollOffset.snapTo(0f)
@@ -1905,14 +1928,18 @@ internal fun TerminalWithAccessibility(
                             val isFinger = down.type == PointerType.Touch
                             val releaseFilter = SelectionReleaseFilter<SelectionRange>()
                             var selectionReleaseTime = down.uptimeMillis
+                            var initialSelRow = -1
+                            var initialSelCol = -1
+                            var selectionDragged = false
                             fun selectionPoint(raw: Offset): Offset {
                                 if (!isFinger) return raw
-                                return edgeReachPosition(
+                                return selectionHandleDragPosition(
                                     raw,
+                                    down.position,
+                                    down.position,
                                     size.width.toFloat(),
                                     size.height.toFloat(),
                                     with(density) { SELECTION_EDGE_INSET.toPx() },
-                                    with(density) { SELECTION_EDGE_TRANSITION.toPx() },
                                 )
                             }
 
@@ -2176,18 +2203,14 @@ internal fun TerminalWithAccessibility(
                                         .coerceIn(0, screenState.snapshot.cols - 1)
                                     val row = ((startTarget.y + keyboardCoveredPx) / baseCharHeight).toInt()
                                         .coerceIn(0, screenState.snapshot.rows - 1)
+                                    initialSelCol = col
+                                    initialSelRow = row
                                     selectionManager.startSelection(
                                         row,
                                         col,
                                         screenState.snapshot.cols,
                                         SelectionMode.CHARACTER,
                                     )
-                                    selectionManager.selectionRange?.let {
-                                        releaseFilter.record(
-                                            it,
-                                            down.uptimeMillis + viewConfiguration.longPressTimeoutMillis,
-                                        )
-                                    }
                                     hostView.performHapticFeedback(
                                         android.view.HapticFeedbackConstants.LONG_PRESS,
                                     )
@@ -2245,48 +2268,53 @@ internal fun TerminalWithAccessibility(
                                 val zoomDecide = 0.08f
                                 val panDecidePx = with(density) { 16.dp.toPx() }
 
-                                while (true) {
-                                    val event = awaitPointerEvent()
-                                    if (event.changes.all { !it.pressed }) break
-                                    if (event.changes.size > 1) {
-                                        cumulativeZoom *= event.calculateZoom()
-                                        val panY = event.calculatePan().y
-                                        if (mode == 0) {
-                                            decideAccumY += panY
-                                            when {
-                                                kotlin.math.abs(1f - cumulativeZoom) > zoomDecide -> {
-                                                    mode = 1
-                                                    gestureType = GestureType.Zoom
+                                try {
+                                    while (true) {
+                                        val event = awaitPointerEvent()
+                                        if (event.changes.all { !it.pressed }) break
+                                        if (event.changes.size > 1) {
+                                            cumulativeZoom *= event.calculateZoom()
+                                            val panY = event.calculatePan().y
+                                            if (mode == 0) {
+                                                decideAccumY += panY
+                                                when {
+                                                    kotlin.math.abs(1f - cumulativeZoom) > zoomDecide -> {
+                                                        mode = 1
+                                                        gestureType = GestureType.Zoom
+                                                    }
+
+                                                    kotlin.math.abs(decideAccumY) > panDecidePx -> {
+                                                        mode = 2
+                                                        gestureType = GestureType.Scroll
+                                                        touchScrollActive = true
+                                                    }
+                                                }
+                                            }
+                                            when (mode) {
+                                                1 -> {
+                                                    val newSize = (startFontSize * cumulativeZoom)
+                                                        .coerceIn(MIN_PINCH_FONT_SP, MAX_PINCH_FONT_SP)
+                                                    calculatedFontSize = newSize.sp
                                                 }
 
-                                                kotlin.math.abs(decideAccumY) > panDecidePx -> {
-                                                    mode = 2
-                                                    gestureType = GestureType.Scroll
+                                                2 -> {
+                                                    // Always Haven's local scrollback —
+                                                    // never forward to the app. Pixel-smooth,
+                                                    // mirroring the one-finger no-callback
+                                                    // path. Natural scrolling: fingers down
+                                                    // = older content (+panY).
+                                                    val newOffset = (scrollOffset.value + panY)
+                                                        .coerceIn(0f, maxScroll)
+                                                    coroutineScope.launch { scrollOffset.snapTo(newOffset) }
+                                                    val scrolledLines = (newOffset / baseCharHeight).toInt()
+                                                    screenState.scrollBy(scrolledLines - screenState.scrollbackPosition)
                                                 }
                                             }
+                                            event.changes.forEach { it.consume() }
                                         }
-                                        when (mode) {
-                                            1 -> {
-                                                val newSize = (startFontSize * cumulativeZoom)
-                                                    .coerceIn(MIN_PINCH_FONT_SP, MAX_PINCH_FONT_SP)
-                                                calculatedFontSize = newSize.sp
-                                            }
-
-                                            2 -> {
-                                                // Always Haven's local scrollback —
-                                                // never forward to the app. Pixel-smooth,
-                                                // mirroring the one-finger no-callback
-                                                // path. Natural scrolling: fingers down
-                                                // = older content (+panY).
-                                                val newOffset = (scrollOffset.value + panY)
-                                                    .coerceIn(0f, maxScroll)
-                                                coroutineScope.launch { scrollOffset.snapTo(newOffset) }
-                                                val scrolledLines = (newOffset / baseCharHeight).toInt()
-                                                screenState.scrollBy(scrolledLines - screenState.scrollbackPosition)
-                                            }
-                                        }
-                                        event.changes.forEach { it.consume() }
                                     }
+                                } finally {
+                                    touchScrollActive = false
                                 }
 
                                 if (mode == 1) {
@@ -2383,6 +2411,7 @@ internal fun TerminalWithAccessibility(
                                                     screenState.scrollbackPosition * baseCharHeight,
                                                 )
                                             }
+                                            selectionDragged = true
                                             selectionManager.updateSelection(selRow, selCol)
                                         }
 
@@ -2457,7 +2486,12 @@ internal fun TerminalWithAccessibility(
                                             val claimed = gestureCallback
                                                 ?.onMouseDrag(downCol, downRow, MouseDragPhase.Start)
                                                 ?: false
-                                            gestureType = if (claimed) GestureType.MouseDrag else GestureType.Scroll
+                                            if (claimed) {
+                                                gestureType = GestureType.MouseDrag
+                                            } else {
+                                                gestureType = GestureType.Scroll
+                                                touchScrollActive = true
+                                            }
                                         } else if (!callbackLongPressFired) {
                                             // Plain one-finger swipe (no long-press).
                                             val absDx = kotlin.math.abs(totalDx)
@@ -2501,6 +2535,7 @@ internal fun TerminalWithAccessibility(
                                                     gestureType = GestureType.SwipeHold
                                                 } else {
                                                     gestureType = GestureType.Scroll
+                                                    touchScrollActive = true
                                                 }
                                             }
                                         }
@@ -2524,54 +2559,73 @@ internal fun TerminalWithAccessibility(
                                                 ((dragTarget.y + keyboardCoveredPx) / baseCharHeight).toInt()
                                                     .coerceIn(0, screenState.snapshot.rows - 1)
 
-                                            // Edge-zone extension. Two paths:
-                                            //  1. Mouse-mode (callback present) — forward
-                                            //     wheel events to the remote so e.g. tmux
-                                            //     copy-mode auto-scrolls and extends its
-                                            //     own selection.
-                                            //  2. Native (no callback) — scroll our own
-                                            //     viewport one line and shift the selection
-                                            //     anchor in lockstep so it stays on the
-                                            //     same logical content line. This is what
-                                            //     lets a drag-select extend off the top of
-                                            //     the viewport into scrollback (#94).
-                                            val relY = change.position.y /
-                                                (visibleViewportPx)
-                                            val nearTop = relY < EDGE_SCROLL_ZONE
-                                            val nearBottom = relY > 1f - EDGE_SCROLL_ZONE
-                                            val callbackHandled = if ((nearTop || nearBottom) && gestureCallback != null) {
-                                                gestureCallback.onScroll(dragCol, dragRow, nearTop)
-                                            } else {
-                                                false
-                                            }
-
-                                            if (!callbackHandled) {
-                                                if (nearTop && screenState.scrollbackPosition < screenState.snapshot.scrollback.size) {
-                                                    screenState.scrollBy(+1)
-                                                    selectionManager.shiftSelectionStartByRows(+1)
-                                                    coroutineScope.launch {
-                                                        scrollOffset.snapTo(
-                                                            screenState.scrollbackPosition * baseCharHeight,
-                                                        )
-                                                    }
-                                                } else if (nearBottom && screenState.scrollbackPosition > 0) {
-                                                    screenState.scrollBy(-1)
-                                                    selectionManager.shiftSelectionStartByRows(-1)
-                                                    coroutineScope.launch {
-                                                        scrollOffset.snapTo(
-                                                            screenState.scrollbackPosition * baseCharHeight,
+                                            // Only treat the gesture as an active selection drag
+                                            // once the finger actually moves to a different cell
+                                            // from the long-press start (#716). Sub-slop touch
+                                            // jitter on the initial cell would otherwise call
+                                            // updateSelection(initialRow, initialCol) and
+                                            // collapse expandSelectionToWord's word range back
+                                            // to a single character.
+                                            if (selectionDragged || dragRow != initialSelRow || dragCol != initialSelCol) {
+                                                if (!selectionDragged) {
+                                                    selectionDragged = true
+                                                    selectionManager.selectionRange?.let {
+                                                        releaseFilter.record(
+                                                            it,
+                                                            down.uptimeMillis + viewConfiguration.longPressTimeoutMillis,
                                                         )
                                                     }
                                                 }
-                                            }
 
-                                            selectionManager.updateSelection(
-                                                dragRow,
-                                                dragCol,
-                                            )
-                                            selectionReleaseTime = change.uptimeMillis
-                                            selectionManager.selectionRange?.let {
-                                                releaseFilter.record(it, change.uptimeMillis)
+                                                // Edge-zone extension. Two paths:
+                                                //  1. Mouse-mode (callback present) — forward
+                                                //     wheel events to the remote so e.g. tmux
+                                                //     copy-mode auto-scrolls and extends its
+                                                //     own selection.
+                                                //  2. Native (no callback) — scroll our own
+                                                //     viewport one line and shift the selection
+                                                //     anchor in lockstep so it stays on the
+                                                //     same logical content line. This is what
+                                                //     lets a drag-select extend off the top of
+                                                //     the viewport into scrollback (#94).
+                                                val relY = change.position.y /
+                                                    (visibleViewportPx)
+                                                val nearTop = relY < EDGE_SCROLL_ZONE
+                                                val nearBottom = relY > 1f - EDGE_SCROLL_ZONE
+                                                val callbackHandled = if ((nearTop || nearBottom) && gestureCallback != null) {
+                                                    gestureCallback.onScroll(dragCol, dragRow, nearTop)
+                                                } else {
+                                                    false
+                                                }
+
+                                                if (!callbackHandled) {
+                                                    if (nearTop && screenState.scrollbackPosition < screenState.snapshot.scrollback.size) {
+                                                        screenState.scrollBy(+1)
+                                                        selectionManager.shiftSelectionStartByRows(+1)
+                                                        coroutineScope.launch {
+                                                            scrollOffset.snapTo(
+                                                                screenState.scrollbackPosition * baseCharHeight,
+                                                            )
+                                                        }
+                                                    } else if (nearBottom && screenState.scrollbackPosition > 0) {
+                                                        screenState.scrollBy(-1)
+                                                        selectionManager.shiftSelectionStartByRows(-1)
+                                                        coroutineScope.launch {
+                                                            scrollOffset.snapTo(
+                                                                screenState.scrollbackPosition * baseCharHeight,
+                                                            )
+                                                        }
+                                                    }
+                                                }
+
+                                                selectionManager.updateSelection(
+                                                    dragRow,
+                                                    dragCol,
+                                                )
+                                                selectionReleaseTime = change.uptimeMillis
+                                                selectionManager.selectionRange?.let {
+                                                    releaseFilter.record(it, change.uptimeMillis)
+                                                }
                                             }
                                             magnifierPosition = change.position
                                         }
@@ -2694,6 +2748,7 @@ internal fun TerminalWithAccessibility(
                             // 6. Gesture ended - cleanup
                             logGesture("ended-${gestureType.name.lowercase()}")
                             gestureEnded = true
+                            touchScrollActive = false
                             longPressJob.cancel()
                             callbackLongPressJob?.cancel()
                             edgeAutoScrollJob.cancel()
@@ -2753,7 +2808,7 @@ internal fun TerminalWithAccessibility(
                                     if (selectionManager.isSelecting) {
                                         // Roll back a pre-release touch wobble to the last
                                         // settled selection (ported from upstream 6209b978).
-                                        if (isFinger) {
+                                        if (isFinger && selectionDragged) {
                                             releaseFilter.resultAtRelease(selectionReleaseTime)
                                                 ?.let(selectionManager::restoreSelectionRange)
                                         }
@@ -3324,6 +3379,9 @@ internal fun TerminalWithAccessibility(
                     // Refreshed here rather than captured in the factory:
                     // supplying onReset makes this a reusable Compose node, and
                     // a reused node does not re-run the factory.
+                    if (view.keyboardHandler !== keyboardHandler) {
+                        view.resetImeBuffer()
+                    }
                     view.keyboardHandler = keyboardHandler
                     imeInputView = view
                     view.allowStandardKeyboard = allowStandardKeyboard
@@ -4421,3 +4479,22 @@ private fun findOptimalFontSize(
 }
 
 private fun charsPerDimension(pixels: Int, charPixels: Float) = (pixels / charPixels).toInt().coerceAtLeast(1)
+
+@VisibleForTesting
+internal fun updateMaxAvailableHeight(
+    currentMaxHeight: Int,
+    measuredHeight: Int,
+    imeBottomPx: Int,
+    navBottomPx: Int = 0,
+): Int {
+    if (imeBottomPx == 0) return measuredHeight
+    val effectiveImeInset = (imeBottomPx - navBottomPx).coerceAtLeast(0)
+    val estimatedHiddenHeight = measuredHeight + effectiveImeInset
+    return if (currentMaxHeight == 0 || measuredHeight > currentMaxHeight) {
+        estimatedHiddenHeight
+    } else {
+        currentMaxHeight
+    }
+}
+
+

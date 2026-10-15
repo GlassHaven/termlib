@@ -98,24 +98,27 @@ class GrowBackfillDiffRenderTest {
     }
 
     private fun inkRepaint(e: TerminalEmulatorImpl, prevFrame: List<String>, newFrame: List<String>) {
-        // Ink's render(): return to the bottom of the previous block (the
-        // cursor is already parked on its last row), walk to the top, then
-        // diff row by row.
+        // Ink's render(): return to the top of the previous block using relative
+        // cursorUp(prevFrame.size - 1) from where the cursor was parked on its
+        // last row, then diff row by row (cursorNextLine on skip, or
+        // CR + text + EL + cursorNextLine on write; no LF on the last row so
+        // the screen never scrolls).
         e.writeInput("\u001b[${prevFrame.size - 1}A".toByteArray())
         for (i in newFrame.indices) {
             val isLast = i == newFrame.size - 1
             if (i < prevFrame.size && newFrame[i] == prevFrame[i]) {
-                e.writeInput("\u001b[E".toByteArray())
+                if (!isLast) e.writeInput("\u001b[E".toByteArray())
             } else {
-                e.writeInput(("\r" + newFrame[i] + "\u001b[K" + if (isLast) "" else "\n").toByteArray())
+                e.writeInput(("\r" + newFrame[i] + "\u001b[K" + if (isLast) "" else "\u001b[E").toByteArray())
             }
         }
     }
 
     /**
-     * Characterization: with the default backfill on, the grow pops scrollback
-     * into the top rows and an Ink-style diff repaint strands it in every
-     * skipped line — the mechanism behind the user-visible artifact.
+     * Characterization: with the default backfill on, the grow pops 17 scrollback
+     * lines into rows 0..16 and shifts the cursor with its bottom line to row 39.
+     * An Ink-style relative-cursor repaint (`CSI 22A`) then starts at row 17
+     * instead of row 0, leaving rows 0..16 filled with stale popped scrollback.
      */
     @Test
     fun `backfilled grow strands popped rows under a diff-render repaint`() = runBlocking {
@@ -127,7 +130,7 @@ class GrowBackfillDiffRenderTest {
         emulator.resize(40, 51)
         refresh(emulator)
         assertEquals("backfilled grow pops 17 rows", 3, emulator.snapshot.value.scrollback.size)
-        assertEquals("cursor stays at its pre-grow cell", 22 to 0, nativeCursor(emulator))
+        assertEquals("cursor shifts down 17 rows with its line", 39 to 0, nativeCursor(emulator))
 
         val newFrame = expectedGrowFrame(prev)
         inkRepaint(emulator, prev, newFrame)
@@ -135,9 +138,9 @@ class GrowBackfillDiffRenderTest {
         val grid = visibleText(emulator)
         val stale = grid.indices.filter { grid[it] != newFrame.getOrElse(it) { "" } }
         org.junit.Assert.assertTrue(
-            "expected the backfill artifact (stale rows under a diff-render repaint), got stale=$stale " +
+            "expected the backfill artifact (stale top rows under a relative-cursor repaint), got stale=$stale " +
                 "grid=${grid.joinToString("|")} expected=${newFrame.joinToString("|")}",
-            stale.contains(5) && stale.contains(10),
+            stale.contains(0) && stale.contains(16),
         )
     }
 

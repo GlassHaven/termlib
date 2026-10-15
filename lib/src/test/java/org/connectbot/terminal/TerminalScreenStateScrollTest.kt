@@ -52,6 +52,7 @@ class TerminalScreenStateScrollTest {
         screenLines: List<String> = List(rows) { "" },
         scrollback: List<String> = emptyList(),
         seqNum: Long = 0L,
+        scrollbackEvictedCount: Long = 0L,
     ): TerminalSnapshot {
         val lines = screenLines.mapIndexed { i, t -> lineOf(i, t, cols) }
         val sb = scrollback.mapIndexed { i, t -> lineOf(-(i + 1), t, cols) }
@@ -68,6 +69,7 @@ class TerminalScreenStateScrollTest {
             cols = cols,
             timestamp = 0L,
             sequenceNumber = seqNum,
+            scrollbackEvictedCount = scrollbackEvictedCount,
         )
     }
 
@@ -573,4 +575,43 @@ class TerminalScreenStateScrollTest {
         assertEquals("screen A", state.getVisibleLine(1).text.trimEnd())
         assertEquals("screen B", state.getVisibleLine(2).text.trimEnd())
     }
+
+    @Test
+    fun `scrolled-up position preserved when scrollback ring buffer is full and evicting`() {
+        // Ring buffer is at capacity (4 lines): sb1..sb4, screen shows screen A..C
+        val state = TerminalScreenState(
+            snapshot(
+                rows = 3,
+                cols = 80,
+                screenLines = listOf("screen A", "screen B", "screen C"),
+                scrollback = listOf("sb1", "sb2", "sb3", "sb4"),
+                seqNum = 0,
+                scrollbackEvictedCount = 10L,
+            ),
+        )
+        state.scrollBy(1) // Viewing: sb4, screen A, screen B
+        assertEquals("sb4", state.getVisibleLine(0).text.trimEnd())
+        assertEquals("screen A", state.getVisibleLine(1).text.trimEnd())
+        assertEquals("screen B", state.getVisibleLine(2).text.trimEnd())
+
+        // 1 new line scrolls out: sb1 is evicted, "screen A" enters scrollback.
+        // scrollback.size remains 4, but scrollbackEvictedCount increments to 11.
+        state.updateSnapshot(
+            snapshot(
+                rows = 3,
+                cols = 80,
+                screenLines = listOf("screen B", "screen C", "screen D"),
+                scrollback = listOf("sb2", "sb3", "sb4", "screen A"),
+                seqNum = 1,
+                scrollbackEvictedCount = 11L,
+            ),
+        )
+
+        // scrollbackPosition must advance from 1 to 2 so viewport stays on sb4, screen A, screen B
+        assertEquals(2, state.scrollbackPosition)
+        assertEquals("sb4", state.getVisibleLine(0).text.trimEnd())
+        assertEquals("screen A", state.getVisibleLine(1).text.trimEnd())
+        assertEquals("screen B", state.getVisibleLine(2).text.trimEnd())
+    }
 }
+

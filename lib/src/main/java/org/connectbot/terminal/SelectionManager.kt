@@ -135,6 +135,13 @@ interface SelectionController {
     fun getSelectedText(): String = ""
 
     /**
+     * Returns the text of each currently visible viewport row (`0 until rows`),
+     * accounting for [scrollbackPosition]. Default returns an empty list so
+     * existing test doubles compile.
+     */
+    fun getVisibleLineTexts(): List<String> = emptyList()
+
+    /**
      * Shift the selection's start anchor's row by [delta]. Used by the
      * Compose gesture handler during drag-extend with edge-zone
      * auto-scroll (see Terminal.kt GestureType.Selection): each scroll

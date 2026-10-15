@@ -318,12 +318,27 @@ data class AgentSnapshot(
     val terminalTitle: String,
     val scrollbackSize: Int,
     val lines: List<AgentLine>,
+    val scrollbackEvictedCount: Long = 0L,
+    val imageAssetCount: Int = 0,
+    val imagePlacementCount: Int = 0,
 )
 
 data class AgentLine(
     val text: String,
     val softWrapped: Boolean,
     val semanticSegments: List<AgentSemanticSegment>,
+    val images: List<AgentImageSlice> = emptyList(),
+)
+
+data class AgentImageSlice(
+    val assetId: Long,
+    val left: Int,
+    val right: Int,
+    val sourceRow: Int,
+    val rows: Int,
+    val sourceCol: Int,
+    val columns: Int,
+    val z: Int,
 )
 
 data class AgentSemanticSegment(
@@ -629,6 +644,7 @@ internal class TerminalEmulatorImpl(
     // Scrollback buffer
     private val scrollback = mutableListOf<TerminalLine>()
     private val maxScrollbackLines: Int = maxScrollbackLines.coerceAtLeast(0)
+    private var scrollbackEvictedCount: Long = 0L
 
     // Cached immutable copy of scrollback - only recreate when scrollback changes
     private var scrollbackSnapshot: List<TerminalLine> = emptyList()
@@ -815,6 +831,9 @@ internal class TerminalEmulatorImpl(
         maxLines: Int,
     ): AgentSnapshot {
         val snap = _snapshot.value
+        val (assetCount, placementCount) = synchronized(damageLock) {
+            imageStore.assets.size to imageStore.placements.size
+        }
         val cap = maxLines.coerceAtLeast(0)
         val take = if (cap == Int.MAX_VALUE) snap.lines.size else minOf(cap, snap.lines.size)
         val agentLines = snap.lines.take(take).map { line ->
@@ -831,10 +850,23 @@ internal class TerminalEmulatorImpl(
             } else {
                 emptyList()
             }
+            val imgs = line.images.map { slice ->
+                AgentImageSlice(
+                    assetId = slice.asset.id,
+                    left = slice.left,
+                    right = slice.right,
+                    sourceRow = slice.sourceRow,
+                    rows = slice.rows,
+                    sourceCol = slice.sourceCol,
+                    columns = slice.columns,
+                    z = slice.z,
+                )
+            }
             AgentLine(
                 text = line.text,
                 softWrapped = line.softWrapped,
                 semanticSegments = segs,
+                images = imgs,
             )
         }
         return AgentSnapshot(
@@ -846,6 +878,9 @@ internal class TerminalEmulatorImpl(
             terminalTitle = snap.terminalTitle,
             scrollbackSize = snap.scrollback.size,
             lines = agentLines,
+            scrollbackEvictedCount = snap.scrollbackEvictedCount,
+            imageAssetCount = assetCount,
+            imagePlacementCount = placementCount,
         )
     }
 
@@ -1083,6 +1118,7 @@ internal class TerminalEmulatorImpl(
             scrollback.add(line)
             if (scrollback.size > maxScrollbackLines) {
                 scrollback.removeAt(0)
+                scrollbackEvictedCount++
                 // The ring now holds exactly maxScrollbackLines history rows, so drop
                 // any image placement that can no longer be reached by a history
                 // line's snapshot query (row - size ≥ -maxScrollbackLines). #583
@@ -1127,6 +1163,7 @@ internal class TerminalEmulatorImpl(
         synchronized(damageLock) {
             imageStore.trimHistory(0)
             scrollback.clear()
+            scrollbackEvictedCount = 0L
             scrollbackDirty = true
             propertyChanged = true
             requestProcessPendingUpdatesLocked()
@@ -1565,6 +1602,7 @@ internal class TerminalEmulatorImpl(
         // the lock here, the snapshot-building thread might see a stale reference.
         val lines: List<TerminalLine>
         val scrollbackCopy: List<TerminalLine>
+        val evictedCount: Long
         synchronized(damageLock) {
             if (scrollbackDirty) {
                 scrollbackSnapshot = scrollback.toList()
@@ -1572,6 +1610,7 @@ internal class TerminalEmulatorImpl(
             }
             lines = currentLines.toList() // Immutable copy (24 references)
             scrollbackCopy = scrollbackSnapshot // Reuse cached immutable copy
+            evictedCount = scrollbackEvictedCount
         }
 
         val hasImages = imageStore.assets.isNotEmpty()
@@ -1606,6 +1645,7 @@ internal class TerminalEmulatorImpl(
             altScreen = altScreenActive,
             timestamp = System.currentTimeMillis(),
             sequenceNumber = sequenceNumber++,
+            scrollbackEvictedCount = evictedCount,
         )
     }
 

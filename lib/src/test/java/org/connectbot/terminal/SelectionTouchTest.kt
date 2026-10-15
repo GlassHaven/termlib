@@ -109,4 +109,44 @@ class SelectionTouchTest {
         assertEquals(20, unsettled.resultAtRelease(110))
         assertEquals(null, SelectionReleaseFilter<Int>().resultAtRelease(100))
     }
+
+    @Test fun updateMaxAvailableHeightSubtractsNavigationBarOverlapWhenSeededWithImeOpen() {
+        // Host applies .systemBarsPadding().imePadding(): when IME hidden, height is 1900px
+        // (already excludes 144px navBar). When IME opens (900px, including the 144px navBar),
+        // the view shrinks by (900 - 144) = 756px to 1144px.
+        // Seeding maxAvailableHeight while IME is open (e.g. tab switch #714 or rotation #715)
+        // must estimate 1144 + (900 - 144) = 1900px, NOT 1144 + 900 = 2044px (which over-estimated
+        // by 3.5 rows and shifted keyboardCoveredPx / cursor row until IME was hidden).
+        val seededWithImeOpen = updateMaxAvailableHeight(
+            currentMaxHeight = 0,
+            measuredHeight = 1144,
+            imeBottomPx = 900,
+            navBottomPx = 144,
+        )
+        assertEquals(1900, seededWithImeOpen)
+    }
+
+    @Test fun updateMaxAvailableHeightUpdatesWhenMeasuredHeightExceedsStaleLandscapeHeight() {
+        // #715: If a stale landscape maxAvailableHeight (e.g. 900px) survives into portrait
+        // while IME is open and portrait's keyboard-open measuredHeight is 1144px (> 900px),
+        // updateMaxAvailableHeight must re-estimate from the taller portrait measurement.
+        val updated = updateMaxAvailableHeight(
+            currentMaxHeight = 900,
+            measuredHeight = 1144,
+            imeBottomPx = 900,
+            navBottomPx = 144,
+        )
+        assertEquals(1900, updated)
+    }
+
+    @Test fun initialLongPressPointDoesNotWarpBeforeDrag() {
+        // #716: With keyboard open on a 1080x900px viewport and 144px (48dp @ 3x) inset,
+        // edgeReachPosition warped y=400 ( inside 576px transition band) to y=300 (2.5 rows up!).
+        // Using selectionHandleDragPosition(raw, down, down, width, height, inset) keeps
+        // the initial long-press at down.position unwarped while still reaching 0 and height on drag.
+        val down = Offset(300f, 400f)
+        assertEquals(down, selectionHandleDragPosition(down, down, down, 1080f, 900f, 144f))
+        assertEquals(0f, selectionHandleDragPosition(Offset(300f, 144f), down, down, 1080f, 900f, 144f).y, 0.001f)
+        assertEquals(900f, selectionHandleDragPosition(Offset(300f, 756f), down, down, 1080f, 900f, 144f).y, 0.001f)
+    }
 }

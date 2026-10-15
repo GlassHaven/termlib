@@ -247,7 +247,7 @@ class InlineImageTest {
         shadowOf(Looper.getMainLooper()).idle()
         assertEquals(2, requests.size)
         assertTrue(responses.any { "EPERM:user denied inline image" in it })
-        assertEquals(2, terminal.flush().cursorRow)
+        assertEquals(0, terminal.flush().cursorRow)
         assertEquals(2, terminal.flush().cursorCol)
         answers[1].resume(true)
         assertEquals(setOf(8L), terminal.imageStore.assets.keys)
@@ -400,18 +400,50 @@ class InlineImageTest {
             },
         ) as TerminalEmulatorImpl
 
-        terminal.write(kitty("a=T,f=100", png))
+        terminal.write(kitty("a=T,f=100,c=2,r=2", png))
         shadowOf(Looper.getMainLooper()).idle()
         assertEquals(1, terminal.flush().cursorRow)
-        assertEquals(1, terminal.flush().cursorCol)
+        assertEquals(2, terminal.flush().cursorCol)
         assertTrue(terminal.flush().lines.all { it.images.isEmpty() })
 
         answer.resume(true)
 
         val snapshot = terminal.flush()
         assertEquals(1, snapshot.cursorRow)
-        assertEquals(1, snapshot.cursorCol)
+        assertEquals(2, snapshot.cursorCol)
         assertEquals(1, terminal.imageStore.assets.size)
+    }
+
+    @Test
+    fun kittyCursorMovementAdvancesToLastImageRowAndScrollsOnlyOverflowRows() {
+        val terminal = TerminalEmulatorFactory.create(
+            initialRows = 4,
+            initialCols = 12,
+            inlineImages = InlineImages.On(),
+        ) as TerminalEmulatorImpl
+        // 1-row image at (row=2, col=5) leaves cursor on row 2, col 8 (rows - 1 = 0 linefeeds)
+        terminal.write("\u001b[3;6H" + kitty("a=T,q=2,f=100,c=3,r=1", png))
+        val after1Row = terminal.flush()
+        assertEquals(2, after1Row.cursorRow)
+        assertEquals(8, after1Row.cursorCol)
+        assertEquals(0, after1Row.scrollback.size)
+
+        // 4-row image at (row=2, col=0) on a 4-row screen: rows - 1 = 3 linefeeds,
+        // so only 2 rows scroll into scrollback, the full 4-row image stays visible
+        // at rows 0..3, and the cursor lands on row 3 beside its last row.
+        val terminal2 = TerminalEmulatorFactory.create(
+            initialRows = 4,
+            initialCols = 12,
+            inlineImages = InlineImages.On(),
+        ) as TerminalEmulatorImpl
+        terminal2.write("row0\r\nrow1\r\nrow2" + "\u001b[3;1H" + kitty("a=T,q=2,f=100,c=3,r=4", png))
+        val after4Row = terminal2.flush()
+        assertEquals(3, after4Row.cursorRow)
+        assertEquals(3, after4Row.cursorCol)
+        assertEquals(2, after4Row.scrollback.size)
+        val placement = terminal2.imageStore.placements.single()
+        assertEquals(0, placement.top)
+        assertEquals(4, placement.height)
     }
 
     @Test

@@ -409,9 +409,12 @@ internal class TerminalScreenState(
     internal fun updateSnapshot(newSnapshot: TerminalSnapshot) {
         val oldScrollbackSize = snapshot.scrollback.size
         val newScrollbackSize = newSnapshot.scrollback.size
+        val oldEvicted = snapshot.scrollbackEvictedCount
+        val newEvicted = newSnapshot.scrollbackEvictedCount
         snapshot = newSnapshot
         if (scrollbackPosition != 0) {
-            val delta = newScrollbackSize - oldScrollbackSize
+            val evictedDelta = (newEvicted - oldEvicted).coerceAtLeast(0L).toInt()
+            val delta = (newScrollbackSize - oldScrollbackSize) + evictedDelta
             scrollbackPosition = (scrollbackPosition + delta).coerceIn(0, newScrollbackSize)
         }
     }
