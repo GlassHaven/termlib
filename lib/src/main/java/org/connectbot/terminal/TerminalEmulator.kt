@@ -208,6 +208,11 @@ sealed interface TerminalEmulator : AutoCloseable {
     val boldAsBright: Boolean
 
     /**
+     * Whether to treat East Asian Ambiguous-width characters as double-width (2 cells).
+     */
+    val ambiwidth: Boolean
+
+    /**
      * Get the text output of the last completed command.
      *
      * Uses OSC 133 semantic segments to find the boundaries of the most recent
@@ -298,6 +303,9 @@ sealed interface TerminalEmulator : AutoCloseable {
     /** Changing policy cancels in-progress and pending image uploads. */
     fun setInlineImages(inlineImages: InlineImages)
 
+    /** Toggle East Asian Ambiguous-width characters as double-width. */
+    fun setAmbiwidth(enabled: Boolean)
+
     /** Physical cell dimensions used by image placement; defaults to 8 by 16 pixels. */
     fun setCellPixelSize(width: Int, height: Int)
 }
@@ -375,6 +383,7 @@ class TerminalEmulatorFactory {
          * @param boldAsBright Whether bold text using low-intensity ANSI colors (0–7) promotes to
          *                     the corresponding bright palette color (8–15), matching xterm's
          *                     default boldColors behavior. Defaults to true.
+         * @param ambiwidth Whether to treat East Asian Ambiguous-width characters as double-width (2 cells).
          * @param maxScrollbackLines Maximum number of lines kept in the Kotlin-side scrollback
          *                           ring before the oldest entries are evicted. Defaults to 1000;
          *                           hosts that want a longer history (or want to expose the limit
@@ -467,6 +476,7 @@ internal class TerminalEmulatorImpl(
     private val enableAltScreen: Boolean = true,
     override val autoDetectUrls: Boolean = false,
     override val boldAsBright: Boolean = true,
+    override val ambiwidth: Boolean = false,
     maxScrollbackLines: Int = 1000,
     inlineImages: InlineImages = InlineImages.Off,
     xtversion: String? = null,
@@ -551,6 +561,8 @@ internal class TerminalEmulatorImpl(
     @Volatile private var imagePolicy: InlineImages = inlineImages
 
     override val inlineImages: InlineImages get() = imagePolicy
+
+    override fun setAmbiwidth(enabled: Boolean) { terminalNative.setAmbiwidth(enabled) }
 
     override fun setInlineImages(inlineImages: InlineImages): Unit = synchronized(damageLock) {
         val oldLimits = imageStore.limits

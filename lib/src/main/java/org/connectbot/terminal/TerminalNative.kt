@@ -226,6 +226,16 @@ internal class TerminalNative(
     }
 
     /**
+     * Set the ambiguous-width mode: treat East Asian Ambiguous-width characters as double-width.
+     *
+     * @param enabled true to enable, false to disable
+     * @return 0 on success, -1 on error
+     */
+    fun setAmbiwidth(enabled: Boolean): Int {
+        return withPtr { nativeSetAmbiwidth(it, enabled) }
+    }
+
+    /**
      * Close the terminal and release native resources.
      * After calling this, the Terminal instance cannot be used.
      */

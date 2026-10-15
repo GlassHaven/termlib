@@ -1571,4 +1571,11 @@ Java_org_connectbot_terminal_TerminalNative_nativeSetBoldHighbright(JNIEnv* /* e
     return term->setBoldHighbright(enabled ? 1 : 0);
 }
 
+JNIEXPORT jint JNICALL
+Java_org_connectbot_terminal_TerminalNative_nativeSetAmbiwidth(JNIEnv* /* env */, jobject /* thiz */,
+                                                                jlong ptr, jboolean enabled) {
+    vterm_set_ambiwidth(enabled ? 1 : 0);
+    return 0;
+}
+
 } // extern "C"
