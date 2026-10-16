@@ -192,6 +192,23 @@ static int mk_wcwidth(uint32_t ucs)
   if (bisearch(ucs, combining,
                sizeof(combining) / sizeof(struct interval) - 1))
     return 0;
+
+  /* if we arrive here, ucs is not a combining or C0/C1 control character */
+
+  return 1 +
+    (ucs >= 0x1100 &&
+     (ucs <= 0x115f ||                    /* Hangul Jamo init. consonants */
+      ucs == 0x2329 || ucs == 0x232a ||
+      (ucs >= 0x2e80 && ucs <= 0xa4cf &&
+       ucs != 0x303f) ||                  /* CJK ... Yi */
+      (ucs >= 0xac00 && ucs <= 0xd7a3) || /* Hangul Syllables */
+      (ucs >= 0xf900 && ucs <= 0xfaff) || /* CJK Compatibility Ideographs */
+      (ucs >= 0xfe10 && ucs <= 0xfe19) || /* Vertical forms */
+      (ucs >= 0xfe30 && ucs <= 0xfe6f) || /* CJK Compatibility Forms */
+      (ucs >= 0xff00 && ucs <= 0xff60) || /* Fullwidth Forms */
+      (ucs >= 0xffe0 && ucs <= 0xffe6) ||
+      (ucs >= 0x20000 && ucs <= 0x2fffd) ||
+      (ucs >= 0x30000 && ucs <= 0x3fffd)));
 }
 
 static int mk_wcwidth_cjk(uint32_t ucs)
@@ -414,6 +431,10 @@ static int mk_wcwidth_cjk(uint32_t ucs)
     { 0xFF01, 0xFF60 },
     { 0xFFE0, 0xFFE6 },
   };
+
+  if(bisearch(ucs, cjk_ambiguous,
+              sizeof(cjk_ambiguous) / sizeof(struct interval) - 1))
+    return 2;
 
   /* if we arrive here, ucs is not a combining or C0/C1 control character */
 
