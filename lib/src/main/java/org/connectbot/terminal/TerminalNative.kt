@@ -276,6 +276,7 @@ internal class TerminalNative(
     private external fun nativeSetDefaultColors(ptr: Long, fgColor: Int, bgColor: Int): Int
     private external fun nativeGetLineContinuation(ptr: Long, row: Int): Boolean
     private external fun nativeSetBoldHighbright(ptr: Long, enabled: Boolean): Int
+    private external fun nativeSetAmbiwidth(ptr: Long, enabled: Boolean): Int
 
     companion object {
         private const val LIBRARY_NAME = "jni_cb_term"
