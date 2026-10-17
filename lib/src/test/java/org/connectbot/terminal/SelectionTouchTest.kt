@@ -61,6 +61,7 @@ class SelectionTouchTest {
         assertEquals(Offset(100f, 100f), reach.position(Offset(80f, 80f)))
         assertEquals(Offset.Zero, reach.position(Offset(20f, 20f)))
     }
+
     @Test fun handleReachesEdgesBeforeFingerHitsCaseWithoutJumpingOnGrab() {
         val down = Offset(180f, 300f)
         val anchor = Offset(200f, 270f)
