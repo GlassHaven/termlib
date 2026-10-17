@@ -576,6 +576,7 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
      * scrollback, which this walk can never reach, so treating row 0 as the
      * chain start loses nothing. Reproduced under ASan with the exact
      * reporter stack (resize_buffer <- resize <- on_resize). */
+
     while(REFLOW && old_lineinfo && old_row > 0 && old_lineinfo[old_row].continuation)
       old_row--;
     int old_row_start = old_row;
