@@ -53,8 +53,11 @@ Terminal::Terminal(JNIEnv* env, jobject callbacks, int rows, int cols, bool enab
     // Get JavaVM for callback invocations from any thread
     env->GetJavaVM(&mJavaVM);
 
-    // Store global reference to callbacks
-    mCallbacks = env->NewGlobalRef(callbacks);
+    // Borrow the callbacks object for the duration of construction: the
+    // vterm_screen_reset below fires libvterm callbacks into Java, and the
+    // JNI argument keeps it alive until return. No global reference is taken —
+    // that ref is what rooted the Kotlin<->native cycle upstream #369.
+    CallbackScope scope(*this, env, callbacks);
 
     // Cache method IDs
     ScopedLocalRef<jclass> callbacksClass(env, env->GetObjectClass(callbacks));
@@ -292,13 +295,12 @@ Terminal::~Terminal() {
         mVt = nullptr;
     }
 
-    // Release global references
+    // Release global references. mCallbacks is deliberately absent: it was
+    // never a global reference (see CallbackScope), so there is nothing to
+    // delete — and deleting the callbacks ref is exactly what the cycle fix
+    // removed. Only the class refs (which don't root Kotlin instances) remain.
     JNIEnv* env;
     if (mJavaVM->GetEnv((void**)&env, JNI_VERSION_1_6) == JNI_OK) {
-        if (mCallbacks) {
-            env->DeleteGlobalRef(mCallbacks);
-            mCallbacks = nullptr;
-        }
         if (mCellRunClass) {
             env->DeleteGlobalRef(mCellRunClass);
             mCellRunClass = nullptr;
@@ -774,8 +776,8 @@ int Terminal::termOscFallback(int command, VTermStringFragment frag, void* user)
 }
 
 jlong Terminal::imageFragment(bool kitty, VTermStringFragment frag) {
-    JNIEnv* env;
-    if (mJavaVM->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK || env->ExceptionCheck()) return 0;
+    JNIEnv* env = mEnv;
+    if (!env || env->ExceptionCheck()) return 0;
     VTermPos pos{};
     vterm_state_get_cursorpos(vterm_obtain_state(mVt), &pos);
     jlong result = 0;
@@ -816,8 +818,8 @@ int Terminal::termCsiFallback(const char* leader, const long args[], int argcoun
     if (command != 't' || (leader && *leader) || (intermed && *intermed) || argcount != 1 ||
         (args[0] != 14 && args[0] != 16 && args[0] != 18)) return 0;
     auto* term = static_cast<Terminal*>(user);
-    JNIEnv* env;
-    if (term->mJavaVM->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK || env->ExceptionCheck()) return 0;
+    JNIEnv* env = term->mEnv;
+    if (!env || env->ExceptionCheck()) return 0;
     env->CallVoidMethod(term->mCallbacks, term->mImageQueryMethod, static_cast<jint>(args[0]));
     return 1;
 }
@@ -829,8 +831,8 @@ int Terminal::termImageResize(int buffer, int delta, int rows, int cols, void* u
 int Terminal::imageEdit(int kind, VTermRect rect, int downward, int rightward) {
     if (!mImageTracking) return 1;
     if (mReservingImage && kind != 1) return 1;
-    JNIEnv* env;
-    if (mJavaVM->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK || env->ExceptionCheck()) return 0;
+    JNIEnv* env = mEnv;
+    if (!env || env->ExceptionCheck()) return 0;
     env->CallVoidMethod(mCallbacks, mImageEditMethod, kind, rect.start_row, rect.end_row,
         rect.start_col, rect.end_col, downward, rightward);
     return 1;
@@ -891,10 +893,8 @@ void Terminal::invokeDamage(int startRow, int endRow, int startCol, int endCol) 
         return;
     }
 
-    JNIEnv* env;
-    if (mJavaVM->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK) {
-        return;
-    }
+    JNIEnv* env = mEnv;
+    if (!env || env->ExceptionCheck()) return;
 
     env->CallIntMethod(mCallbacks, mDamageMethod, startRow, endRow, startCol, endCol);
     JNI_CHECK_EXCEPTION(env);
@@ -905,10 +905,8 @@ int Terminal::invokeMoverect(VTermRect dest, VTermRect src) {
         return 0;
     }
 
-    JNIEnv* env;
-    if (mJavaVM->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK) {
-        return 0;
-    }
+    JNIEnv* env = mEnv;
+    if (!env || env->ExceptionCheck()) return 0;
 
     ScopedLocalRef<jobject> destObj(env, env->NewObject(mTermRectClass, mTermRectConstructor,
         dest.start_row, dest.end_row, dest.start_col, dest.end_col));
@@ -935,10 +933,8 @@ void Terminal::invokeMoveCursor(int row, int col, int oldRow, int oldCol, bool v
         return;
     }
 
-    JNIEnv* env;
-    if (mJavaVM->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK) {
-        return;
-    }
+    JNIEnv* env = mEnv;
+    if (!env || env->ExceptionCheck()) return;
 
     ScopedLocalRef<jobject> posObj(env, env->NewObject(mCursorPositionClass, mCursorPositionConstructor, row, col));
     ScopedLocalRef<jobject> oldPosObj(env, env->NewObject(mCursorPositionClass, mCursorPositionConstructor, oldRow, oldCol));
@@ -952,10 +948,8 @@ void Terminal::invokeSetTermProp(VTermProp prop, VTermValue* val) {
         return;
     }
 
-    JNIEnv* env;
-    if (mJavaVM->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK) {
-        return;
-    }
+    JNIEnv* env = mEnv;
+    if (!env || env->ExceptionCheck()) return;
 
     ScopedLocalRef<jobject> propValue(env, nullptr);
 
@@ -1023,10 +1017,8 @@ void Terminal::invokeBell() {
         return;
     }
 
-    JNIEnv* env;
-    if (mJavaVM->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK) {
-        return;
-    }
+    JNIEnv* env = mEnv;
+    if (!env || env->ExceptionCheck()) return;
 
     env->CallIntMethod(mCallbacks, mBellMethod);
     JNI_CHECK_EXCEPTION(env);
@@ -1037,10 +1029,8 @@ void Terminal::invokePushScrollbackLine(int cols, const VTermScreenCell* cells, 
         return;
     }
 
-    JNIEnv* env;
-    if (mJavaVM->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK) {
-        return;
-    }
+    JNIEnv* env = mEnv;
+    if (!env || env->ExceptionCheck()) return;
 
     // Build a list to hold actual cells (excluding fullwidth placeholders)
     std::vector<ScopedLocalRef<jobject>> screenCells;
@@ -1158,10 +1148,8 @@ int Terminal::invokePopScrollbackLine(int cols, VTermScreenCell* cells) {
         return 0;
     }
 
-    JNIEnv* env;
-    if (mJavaVM->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK) {
-        return 0;
-    }
+    JNIEnv* env = mEnv;
+    if (!env || env->ExceptionCheck()) return 0;
 
     ScopedLocalRef<jclass> screenCellClass(env, env->FindClass("org/connectbot/terminal/ScreenCell"));
     if (!screenCellClass.get()) {
@@ -1278,10 +1266,8 @@ void Terminal::invokeClearScrollback() {
         return;
     }
 
-    JNIEnv* env;
-    if (mJavaVM->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK) {
-        return;
-    }
+    JNIEnv* env = mEnv;
+    if (!env || env->ExceptionCheck()) return;
 
     env->CallIntMethod(mCallbacks, mClearScrollbackMethod);
     JNI_CHECK_EXCEPTION(env);
@@ -1310,10 +1296,8 @@ void Terminal::invokeKeyboardOutput(const char* data, size_t len) {
         return;
     }
 
-    JNIEnv* env;
-    if (mJavaVM->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK) {
-        return;
-    }
+    JNIEnv* env = mEnv;
+    if (!env || env->ExceptionCheck()) return;
 
     ScopedLocalRef<jbyteArray> array(env, env->NewByteArray(len));
     env->SetByteArrayRegion(array, 0, len, reinterpret_cast<const jbyte*>(data));
@@ -1341,9 +1325,9 @@ int Terminal::invokeOscSequence(int command, const std::string& payload, int cur
         return 0;
     }
 
-    JNIEnv* env;
-    if (mJavaVM->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK) {
-        LOGE("invokeOscSequence: Failed to get JNI env");
+    JNIEnv* env = mEnv;
+    if (!env || env->ExceptionCheck()) {
+        LOGE("invokeOscSequence: no active CallbackScope");
         return 0;
     }
 
@@ -1469,8 +1453,10 @@ Java_org_connectbot_terminal_TerminalNative_nativeDestroy(JNIEnv* /* env */, job
 
 JNIEXPORT jint JNICALL
 Java_org_connectbot_terminal_TerminalNative_nativeWriteInputBuffer(JNIEnv* env, jobject /* thiz */,
-                                                                   jlong ptr, jobject buffer, jint length) {
+                                                                   jlong ptr, jobject callbacks,
+                                                                   jobject buffer, jint length) {
     auto* term = reinterpret_cast<Terminal*>(ptr);
+    Terminal::CallbackScope scope(*term, env, callbacks);
     const auto* data = static_cast<const uint8_t*>(
         env->GetDirectBufferAddress(buffer));
     if (!data) {
@@ -1481,8 +1467,10 @@ Java_org_connectbot_terminal_TerminalNative_nativeWriteInputBuffer(JNIEnv* env, 
 
 JNIEXPORT jint JNICALL
 Java_org_connectbot_terminal_TerminalNative_nativeWriteInputArray(JNIEnv* env, jobject /* thiz */,
-                                                                  jlong ptr, jbyteArray data, jint offset, jint length) {
+                                                                  jlong ptr, jobject callbacks,
+                                                                  jbyteArray data, jint offset, jint length) {
     auto* term = reinterpret_cast<Terminal*>(ptr);
+    Terminal::CallbackScope scope(*term, env, callbacks);
     jbyte* bytes = env->GetByteArrayElements(data, nullptr);
     // GetByteArrayElements returns null on OOM (with a pending exception), and
     // the caller's offset/length are untrusted — validate both against the
@@ -1502,37 +1490,47 @@ Java_org_connectbot_terminal_TerminalNative_nativeWriteInputArray(JNIEnv* env, j
 }
 
 JNIEXPORT jint JNICALL
-Java_org_connectbot_terminal_TerminalNative_nativeResize(JNIEnv* /* env */, jobject /* thiz */,
-                                                         jlong ptr, jint rows, jint cols) {
+Java_org_connectbot_terminal_TerminalNative_nativeResize(JNIEnv* env, jobject /* thiz */,
+                                                         jlong ptr, jobject callbacks,
+                                                         jint rows, jint cols) {
     auto* term = reinterpret_cast<Terminal*>(ptr);
+    Terminal::CallbackScope scope(*term, env, callbacks);
     return term->resize(rows, cols);
 }
 
 JNIEXPORT jboolean JNICALL
-Java_org_connectbot_terminal_TerminalNative_nativeDispatchKey(JNIEnv* /* env */, jobject /* thiz */,
-                                                              jlong ptr, jint modifiers, jint key) {
+Java_org_connectbot_terminal_TerminalNative_nativeDispatchKey(JNIEnv* env, jobject /* thiz */,
+                                                              jlong ptr, jobject callbacks,
+                                                              jint modifiers, jint key) {
     auto* term = reinterpret_cast<Terminal*>(ptr);
+    Terminal::CallbackScope scope(*term, env, callbacks);
     return term->dispatchKey(modifiers, key);
 }
 
 JNIEXPORT jboolean JNICALL
-Java_org_connectbot_terminal_TerminalNative_nativeDispatchCharacter(JNIEnv* /* env */, jobject /* thiz */,
-                                                                    jlong ptr, jint modifiers, jint character) {
+Java_org_connectbot_terminal_TerminalNative_nativeDispatchCharacter(JNIEnv* env, jobject /* thiz */,
+                                                                    jlong ptr, jobject callbacks,
+                                                                    jint modifiers, jint character) {
     auto* term = reinterpret_cast<Terminal*>(ptr);
+    Terminal::CallbackScope scope(*term, env, callbacks);
     return term->dispatchCharacter(modifiers, character);
 }
 
 JNIEXPORT jint JNICALL
 Java_org_connectbot_terminal_TerminalNative_nativeGetCellRun(JNIEnv* env, jobject /* thiz */,
-                                                             jlong ptr, jint row, jint col, jobject runObject) {
+                                                             jlong ptr, jobject callbacks,
+                                                             jint row, jint col, jobject runObject) {
     auto* term = reinterpret_cast<Terminal*>(ptr);
+    Terminal::CallbackScope scope(*term, env, callbacks);
     return term->getCellRun(env, row, col, runObject);
 }
 
 JNIEXPORT jint JNICALL
 Java_org_connectbot_terminal_TerminalNative_nativeSetPaletteColors(JNIEnv* env, jobject /* thiz */,
-                                                                   jlong ptr, jintArray colors, jint count) {
+                                                                   jlong ptr, jobject callbacks,
+                                                                   jintArray colors, jint count) {
     auto* term = reinterpret_cast<Terminal*>(ptr);
+    Terminal::CallbackScope scope(*term, env, callbacks);
 
     // Get array elements
     jint* colorData = env->GetIntArrayElements(colors, nullptr);
@@ -1551,23 +1549,29 @@ Java_org_connectbot_terminal_TerminalNative_nativeSetPaletteColors(JNIEnv* env, 
 }
 
 JNIEXPORT jint JNICALL
-Java_org_connectbot_terminal_TerminalNative_nativeSetDefaultColors(JNIEnv* /* env */, jobject /* thiz */,
-                                                                   jlong ptr, jint fgColor, jint bgColor) {
+Java_org_connectbot_terminal_TerminalNative_nativeSetDefaultColors(JNIEnv* env, jobject /* thiz */,
+                                                                   jlong ptr, jobject callbacks,
+                                                                   jint fgColor, jint bgColor) {
     auto* term = reinterpret_cast<Terminal*>(ptr);
+    Terminal::CallbackScope scope(*term, env, callbacks);
     return term->setDefaultColors(static_cast<uint32_t>(fgColor), static_cast<uint32_t>(bgColor));
 }
 
 JNIEXPORT jboolean JNICALL
-Java_org_connectbot_terminal_TerminalNative_nativeGetLineContinuation(JNIEnv* /* env */, jobject /* thiz */,
-                                                                       jlong ptr, jint row) {
+Java_org_connectbot_terminal_TerminalNative_nativeGetLineContinuation(JNIEnv* env, jobject /* thiz */,
+                                                                       jlong ptr, jobject callbacks,
+                                                                       jint row) {
     auto* term = reinterpret_cast<Terminal*>(ptr);
+    Terminal::CallbackScope scope(*term, env, callbacks);
     return term->getLineContinuation(row);
 }
 
 JNIEXPORT jint JNICALL
-Java_org_connectbot_terminal_TerminalNative_nativeSetBoldHighbright(JNIEnv* /* env */, jobject /* thiz */,
-                                                                     jlong ptr, jboolean enabled) {
+Java_org_connectbot_terminal_TerminalNative_nativeSetBoldHighbright(JNIEnv* env, jobject /* thiz */,
+                                                                     jlong ptr, jobject callbacks,
+                                                                     jboolean enabled) {
     auto* term = reinterpret_cast<Terminal*>(ptr);
+    Terminal::CallbackScope scope(*term, env, callbacks);
     return term->setBoldHighbright(enabled ? 1 : 0);
 }
 

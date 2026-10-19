@@ -19,6 +19,7 @@
 
 #include <jni.h>
 #include <vterm.h>
+#include <cassert>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -50,6 +51,29 @@ class Terminal {
 public:
     Terminal(JNIEnv* env, jobject callbacks, int rows = 24, int cols = 80, bool enableAltScreen = true, const char* xtversion = nullptr);
     ~Terminal();
+
+    // TerminalNative's synchronized(this) (withPtr) serializes these scopes and
+    // destruction, and its JNI arguments keep the callback object alive until
+    // return; neither pointer escapes this call. Storing only a borrowed
+    // reference here (no NewGlobalRef) is what breaks the Kotlin<->native
+    // ownership cycle that would otherwise make an abandoned emulator
+    // uncollectable. No native worker issues callbacks outside an active scope.
+    class CallbackScope {
+    public:
+        CallbackScope(Terminal& terminal, JNIEnv* env, jobject callbacks) : mTerminal(terminal) {
+            assert(!terminal.mEnv && !terminal.mCallbacks);
+            terminal.mEnv = env;
+            terminal.mCallbacks = callbacks;
+        }
+        ~CallbackScope() {
+            mTerminal.mCallbacks = nullptr;
+            mTerminal.mEnv = nullptr;
+        }
+        CallbackScope(const CallbackScope&) = delete;
+        CallbackScope& operator=(const CallbackScope&) = delete;
+    private:
+        Terminal& mTerminal;
+    };
 
     // Input handling - receives data from PTY/transport
     int writeInput(const uint8_t* data, size_t length);
@@ -161,9 +185,13 @@ private:
     int mRows;
     int mCols;
 
-    // Java callback object and method IDs
+    // Java callback object and method IDs. mJavaVM is only the process-wide
+    // VM pointer (not a reference to the Kotlin object) and is kept for the
+    // destructor's class-ref cleanup; mCallbacks/mEnv are borrowed only for the
+    // duration of an active CallbackScope — never a global reference.
     JavaVM* mJavaVM{};
-    jobject mCallbacks;  // Global reference
+    JNIEnv* mEnv{};
+    jobject mCallbacks{};  // Borrowed only during CallbackScope
     jmethodID mDamageMethod;
     jmethodID mMoverectMethod;
     jmethodID mMoveCursorMethod;

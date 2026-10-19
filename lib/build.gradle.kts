@@ -123,6 +123,12 @@ android {
         }
     }
 
+    sourceSets {
+        // Shared lifetime checks run both under Robolectric and on-device.
+        getByName("test").kotlin.directories.add("src/sharedTest/java")
+        getByName("androidTest").kotlin.directories.add("src/sharedTest/java")
+    }
+
     testOptions {
         unitTests {
             isIncludeAndroidResources = true
@@ -167,6 +173,9 @@ dependencies {
     testImplementation(composeBom)
     testImplementation(libs.androidx.compose.ui.test.junit4)
     testImplementation(libs.mockk)
+    androidTestImplementation(libs.junit)
+    androidTestImplementation("androidx.test.ext:junit:1.3.0")
+    androidTestImplementation("androidx.test:runner:1.7.0")
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
 }

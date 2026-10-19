@@ -46,6 +46,15 @@ internal class TerminalNative(
 ) : AutoCloseable {
     private var nativePtr: Long = 0
 
+    /**
+     * Held as a plain (non-global) reference and handed to every native call
+     * that can fire callbacks, which is what breaks the ownership cycle: the
+     * native side never takes a JNI global reference to it, so TerminalNative
+     * → callbacks → TerminalNative is collectable once nothing else refers to
+     * it. Nulled in [close] so a closed handle cannot resurrect the borrow.
+     */
+    private var callbacks: TerminalCallbacks? = callbacks
+
     init {
         nativePtr = nativeInit(callbacks, enableAltScreen, xtversion)
         if (nativePtr == 0L) {
@@ -104,9 +113,7 @@ internal class TerminalNative(
      * @param length Number of bytes to read
      * @return Number of bytes consumed
      */
-    fun writeInput(buffer: ByteBuffer, length: Int): Int {
-        return withPtr { nativeWriteInputBuffer(it, buffer, length) }
-    }
+    fun writeInput(buffer: ByteBuffer, length: Int): Int = withPtr { nativeWriteInputBuffer(it, checkNotNull(callbacks), buffer, length) }
 
     /**
      * Feed input data from PTY to the terminal emulator.
@@ -117,9 +124,7 @@ internal class TerminalNative(
      * @param length Number of bytes to read
      * @return Number of bytes consumed
      */
-    fun writeInput(data: ByteArray, offset: Int = 0, length: Int = data.size - offset): Int {
-        return withPtr { nativeWriteInputArray(it, data, offset, length) }
-    }
+    fun writeInput(data: ByteArray, offset: Int = 0, length: Int = data.size - offset): Int = withPtr { nativeWriteInputArray(it, checkNotNull(callbacks), data, offset, length) }
 
     /**
      * Resize the terminal.
@@ -128,9 +133,7 @@ internal class TerminalNative(
      * @param cols Number of columns
      * @return 0 on success
      */
-    fun resize(rows: Int, cols: Int): Int {
-        return withPtr { nativeResize(it, rows, cols) }
-    }
+    fun resize(rows: Int, cols: Int): Int = withPtr { nativeResize(it, checkNotNull(callbacks), rows, cols) }
 
     /**
      * Dispatch a keyboard key event to the terminal.
@@ -140,9 +143,7 @@ internal class TerminalNative(
      * @param key VTermKey value
      * @return true if handled
      */
-    fun dispatchKey(modifiers: Int, key: Int): Boolean {
-        return withPtr { nativeDispatchKey(it, modifiers, key) }
-    }
+    fun dispatchKey(modifiers: Int, key: Int): Boolean = withPtr { nativeDispatchKey(it, checkNotNull(callbacks), modifiers, key) }
 
     /**
      * Dispatch a character input to the terminal.
@@ -152,9 +153,7 @@ internal class TerminalNative(
      * @param character Unicode codepoint
      * @return true if handled
      */
-    fun dispatchCharacter(modifiers: Int, character: Int): Boolean {
-        return withPtr { nativeDispatchCharacter(it, modifiers, character) }
-    }
+    fun dispatchCharacter(modifiers: Int, character: Int): Boolean = withPtr { nativeDispatchCharacter(it, checkNotNull(callbacks), modifiers, character) }
 
     /**
      * Get a run of cells with identical formatting starting at the given position.
@@ -165,9 +164,7 @@ internal class TerminalNative(
      * @param run CellRun object to fill (reusable, call reset() first)
      * @return Number of cells in the run
      */
-    fun getCellRun(row: Int, col: Int, run: CellRun): Int {
-        return withPtr { nativeGetCellRun(it, row, col, run) }
-    }
+    fun getCellRun(row: Int, col: Int, run: CellRun): Int = withPtr { nativeGetCellRun(it, checkNotNull(callbacks), row, col, run) }
 
     /**
      * Set ANSI palette colors (indices 0-15).
@@ -182,7 +179,7 @@ internal class TerminalNative(
     fun setPaletteColors(colors: IntArray, count: Int = colors.size.coerceAtMost(16)): Int {
         require(count <= 16) { "Can only set up to 16 ANSI palette colors" }
         require(colors.size >= count) { "Color array too small for requested count" }
-        return withPtr { nativeSetPaletteColors(it, colors, count) }
+        return withPtr { nativeSetPaletteColors(it, checkNotNull(callbacks), colors, count) }
     }
 
     /**
@@ -195,9 +192,7 @@ internal class TerminalNative(
      * @param background ARGB background color
      * @return 0 on success, -1 on error
      */
-    fun setDefaultColors(foreground: Int, background: Int): Int {
-        return withPtr { nativeSetDefaultColors(it, foreground, background) }
-    }
+    fun setDefaultColors(foreground: Int, background: Int): Int = withPtr { nativeSetDefaultColors(it, checkNotNull(callbacks), foreground, background) }
 
     /**
      * Get the continuation (soft wrap) status for a visible screen line.
@@ -208,9 +203,7 @@ internal class TerminalNative(
      * @param row Row index (0-based)
      * @return true if this line is a continuation of the previous line
      */
-    fun getLineContinuation(row: Int): Boolean {
-        return withPtr { nativeGetLineContinuation(it, row) }
-    }
+    fun getLineContinuation(row: Int): Boolean = withPtr { nativeGetLineContinuation(it, checkNotNull(callbacks), row) }
 
     /**
      * Enable or disable bold-as-bright color promotion.
@@ -221,9 +214,7 @@ internal class TerminalNative(
      * @param enabled true to enable bold-as-bright, false to disable
      * @return 0 on success, -1 on error
      */
-    fun setBoldHighbright(enabled: Boolean): Int {
-        return withPtr { nativeSetBoldHighbright(it, enabled) }
-    }
+    fun setBoldHighbright(enabled: Boolean): Int = withPtr { nativeSetBoldHighbright(it, checkNotNull(callbacks), enabled) }
 
     /**
      * Set the ambiguous-width mode: treat East Asian Ambiguous-width characters as double-width.
@@ -231,9 +222,7 @@ internal class TerminalNative(
      * @param enabled true to enable, false to disable
      * @return 0 on success, -1 on error
      */
-    fun setAmbiwidth(enabled: Boolean): Int {
-        return withPtr { nativeSetAmbiwidth(it, enabled) }
-    }
+    fun setAmbiwidth(enabled: Boolean): Int = withPtr { nativeSetAmbiwidth(it, enabled) }
 
     /**
      * Close the terminal and release native resources.
@@ -246,6 +235,10 @@ internal class TerminalNative(
             // Cleared FIRST, so that even if nativeDestroy throws, no later
             // call can be handed a pointer whose object is being torn down.
             nativePtr = 0
+            // Drop the last Kotlin-side strong reference to the callbacks too,
+            // so an explicit close severs the cycle immediately rather than
+            // waiting for the collector.
+            callbacks = null
             nativeDestroy(ptr)
         }
     }
@@ -266,16 +259,20 @@ internal class TerminalNative(
     // Native method declarations
     private external fun nativeInit(callbacks: TerminalCallbacks, enableAltScreen: Boolean, xtversion: String?): Long
     private external fun nativeDestroy(ptr: Long): Int
-    private external fun nativeWriteInputBuffer(ptr: Long, buffer: ByteBuffer, length: Int): Int
-    private external fun nativeWriteInputArray(ptr: Long, data: ByteArray, offset: Int, length: Int): Int
-    private external fun nativeResize(ptr: Long, rows: Int, cols: Int): Int
-    private external fun nativeDispatchKey(ptr: Long, modifiers: Int, key: Int): Boolean
-    private external fun nativeDispatchCharacter(ptr: Long, modifiers: Int, character: Int): Boolean
-    private external fun nativeGetCellRun(ptr: Long, row: Int, col: Int, run: CellRun): Int
-    private external fun nativeSetPaletteColors(ptr: Long, colors: IntArray, count: Int): Int
-    private external fun nativeSetDefaultColors(ptr: Long, fgColor: Int, bgColor: Int): Int
-    private external fun nativeGetLineContinuation(ptr: Long, row: Int): Boolean
-    private external fun nativeSetBoldHighbright(ptr: Long, enabled: Boolean): Int
+
+    // The callback-reaching entry points take [callbacks] explicitly: the JNI
+    // argument is what keeps the object alive for the duration of the native
+    // call, replacing the global reference the native side used to store.
+    private external fun nativeWriteInputBuffer(ptr: Long, callbacks: TerminalCallbacks, buffer: ByteBuffer, length: Int): Int
+    private external fun nativeWriteInputArray(ptr: Long, callbacks: TerminalCallbacks, data: ByteArray, offset: Int, length: Int): Int
+    private external fun nativeResize(ptr: Long, callbacks: TerminalCallbacks, rows: Int, cols: Int): Int
+    private external fun nativeDispatchKey(ptr: Long, callbacks: TerminalCallbacks, modifiers: Int, key: Int): Boolean
+    private external fun nativeDispatchCharacter(ptr: Long, callbacks: TerminalCallbacks, modifiers: Int, character: Int): Boolean
+    private external fun nativeGetCellRun(ptr: Long, callbacks: TerminalCallbacks, row: Int, col: Int, run: CellRun): Int
+    private external fun nativeSetPaletteColors(ptr: Long, callbacks: TerminalCallbacks, colors: IntArray, count: Int): Int
+    private external fun nativeSetDefaultColors(ptr: Long, callbacks: TerminalCallbacks, fgColor: Int, bgColor: Int): Int
+    private external fun nativeGetLineContinuation(ptr: Long, callbacks: TerminalCallbacks, row: Int): Boolean
+    private external fun nativeSetBoldHighbright(ptr: Long, callbacks: TerminalCallbacks, enabled: Boolean): Int
     private external fun nativeSetAmbiwidth(ptr: Long, enabled: Boolean): Int
 
     companion object {
