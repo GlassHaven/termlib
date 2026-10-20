@@ -52,13 +52,14 @@ data class TerminalSession(
  * Create a TerminalEmulator with keyboard echo for testing.
  * In a real app, onKeyboardInput would write to PTY.
  */
-private fun createTerminalEmulator(): TerminalEmulator {
+private fun createTerminalEmulator(ambiwidth: Boolean = true): TerminalEmulator {
     lateinit var manager: TerminalEmulator
     manager = TerminalEmulatorFactory.create(
         initialRows = 24,
         initialCols = 80,
         defaultForeground = Color.White,
         defaultBackground = Color.Black,
+        ambiwidth = ambiwidth,
         onKeyboardInput = { data ->
             // Echo keyboard input back to terminal for testing
             // In a real app, this would write to PTY which would echo back
@@ -134,25 +135,32 @@ fun ShellScreen() {
     }
     var selectedColorScheme by remember { mutableStateOf(0) }
 
+    var ambiwidthEnabled by remember { mutableStateOf(true) }
+
     // Font selection
     val availableFonts = remember {
         mapOf(
+            "NanumGothicCoding" to Typeface.createFromAsset(context.assets, "fonts/NanumGothicCoding.ttf"),
             "Monospace" to Typeface.MONOSPACE,
             "0xProto" to Typeface.createFromAsset(context.assets, "fonts/0xProtoNerdFontMono-Regular.ttf")
         )
     }
-    var selectedFont by remember { mutableStateOf("0xProto Regular") }
+    var selectedFont by remember { mutableStateOf("NanumGothicCoding") }
     var showFontMenu by remember { mutableStateOf(false) }
 
     // Create separate TerminalEmulator for each session (simulating multiple connections)
     val sessions = remember {
         listOf(
-            TerminalSession("Welcome", createTerminalEmulator(), R.raw.test_output),
-            TerminalSession("256 Colors", createTerminalEmulator(), R.raw.test_output),
-            TerminalSession("Attributes", createTerminalEmulator(), R.raw.test_attributes),
-            TerminalSession("Unicode", createTerminalEmulator(), R.raw.test_unicode),
-            TerminalSession("Scrolling", createTerminalEmulator(), R.raw.test_scroll)
+            TerminalSession("Welcome", createTerminalEmulator(ambiwidthEnabled), R.raw.test_output),
+            TerminalSession("256 Colors", createTerminalEmulator(ambiwidthEnabled), R.raw.test_output),
+            TerminalSession("Attributes", createTerminalEmulator(ambiwidthEnabled), R.raw.test_attributes),
+            TerminalSession("Unicode", createTerminalEmulator(ambiwidthEnabled), R.raw.test_unicode),
+            TerminalSession("Scrolling", createTerminalEmulator(ambiwidthEnabled), R.raw.test_scroll)
         )
+    }
+
+    LaunchedEffect(ambiwidthEnabled) {
+        sessions.forEach { it.emulator.setAmbiwidth(ambiwidthEnabled) }
     }
 
     // Initialize all sessions once
@@ -290,6 +298,24 @@ fun ShellScreen() {
                     expanded = showSettingsMenu,
                     onDismissRequest = { showSettingsMenu = false }
                 ) {
+                    DropdownMenuItem(
+                        text = {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Ambiwidth")
+                                Switch(
+                                    checked = ambiwidthEnabled,
+                                    onCheckedChange = { ambiwidthEnabled = it },
+                                    modifier = Modifier.height(24.dp)
+                                )
+                            }
+                        },
+                        onClick = { ambiwidthEnabled = !ambiwidthEnabled }
+                    )
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                     // Color scheme selector
                     Text(
                         text = "Color Scheme",
