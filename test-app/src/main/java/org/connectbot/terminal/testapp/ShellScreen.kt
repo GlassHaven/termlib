@@ -31,6 +31,8 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.connectbot.terminal.AmbiwidthMode
+import org.connectbot.terminal.FontWidthProfiler
 import org.connectbot.terminal.Terminal
 import org.connectbot.terminal.TerminalEmulator
 import org.connectbot.terminal.TerminalEmulatorFactory
@@ -52,14 +54,14 @@ data class TerminalSession(
  * Create a TerminalEmulator with keyboard echo for testing.
  * In a real app, onKeyboardInput would write to PTY.
  */
-private fun createTerminalEmulator(ambiwidth: Boolean = true): TerminalEmulator {
+private fun createTerminalEmulator(mode: AmbiwidthMode = AmbiwidthMode.AUTO_NARROW): TerminalEmulator {
     lateinit var manager: TerminalEmulator
     manager = TerminalEmulatorFactory.create(
         initialRows = 24,
         initialCols = 80,
         defaultForeground = Color.White,
         defaultBackground = Color.Black,
-        ambiwidth = ambiwidth,
+        ambiwidthMode = mode,
         onKeyboardInput = { data ->
             // Echo keyboard input back to terminal for testing
             // In a real app, this would write to PTY which would echo back
@@ -135,7 +137,7 @@ fun ShellScreen() {
     }
     var selectedColorScheme by remember { mutableStateOf(0) }
 
-    var ambiwidthEnabled by remember { mutableStateOf(true) }
+    var selectedAmbiwidthMode by remember { mutableStateOf(AmbiwidthMode.AUTO_NARROW) }
 
     // Font selection
     val availableFonts = remember {
@@ -151,16 +153,18 @@ fun ShellScreen() {
     // Create separate TerminalEmulator for each session (simulating multiple connections)
     val sessions = remember {
         listOf(
-            TerminalSession("Welcome", createTerminalEmulator(ambiwidthEnabled), R.raw.test_output),
-            TerminalSession("256 Colors", createTerminalEmulator(ambiwidthEnabled), R.raw.test_output),
-            TerminalSession("Attributes", createTerminalEmulator(ambiwidthEnabled), R.raw.test_attributes),
-            TerminalSession("Unicode", createTerminalEmulator(ambiwidthEnabled), R.raw.test_unicode),
-            TerminalSession("Scrolling", createTerminalEmulator(ambiwidthEnabled), R.raw.test_scroll)
+            TerminalSession("Welcome", createTerminalEmulator(selectedAmbiwidthMode), R.raw.test_output),
+            TerminalSession("256 Colors", createTerminalEmulator(selectedAmbiwidthMode), R.raw.test_output),
+            TerminalSession("Attributes", createTerminalEmulator(selectedAmbiwidthMode), R.raw.test_attributes),
+            TerminalSession("Unicode", createTerminalEmulator(selectedAmbiwidthMode), R.raw.test_unicode),
+            TerminalSession("Scrolling", createTerminalEmulator(selectedAmbiwidthMode), R.raw.test_scroll)
         )
     }
 
-    LaunchedEffect(ambiwidthEnabled) {
-        sessions.forEach { it.emulator.setAmbiwidth(ambiwidthEnabled) }
+    LaunchedEffect(selectedAmbiwidthMode, selectedFont) {
+        val tf = availableFonts[selectedFont] ?: Typeface.MONOSPACE
+        val wideCp = if (selectedAmbiwidthMode.isAuto) FontWidthProfiler.profile(tf) else null
+        sessions.forEach { it.emulator.setAmbiwidthMode(selectedAmbiwidthMode, wideCp) }
     }
 
     // Initialize all sessions once
@@ -298,23 +302,31 @@ fun ShellScreen() {
                     expanded = showSettingsMenu,
                     onDismissRequest = { showSettingsMenu = false }
                 ) {
-                    DropdownMenuItem(
-                        text = {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text("Ambiwidth")
-                                Switch(
-                                    checked = ambiwidthEnabled,
-                                    onCheckedChange = { ambiwidthEnabled = it },
-                                    modifier = Modifier.height(24.dp)
-                                )
-                            }
-                        },
-                        onClick = { ambiwidthEnabled = !ambiwidthEnabled }
+                    // Ambiwidth Mode selector
+                    Text(
+                        text = "Ambiwidth Mode",
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    for (mode in AmbiwidthMode.entries) {
+                        DropdownMenuItem(
+                            text = {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (mode == selectedAmbiwidthMode) Text("✓ ") else Text("   ")
+                                    Text(
+                                        when (mode) {
+                                            AmbiwidthMode.NARROW -> "Narrow (1-cell)"
+                                            AmbiwidthMode.AUTO_NARROW -> "Auto + Narrow"
+                                            AmbiwidthMode.WIDE -> "Wide (2-cell)"
+                                            AmbiwidthMode.AUTO_WIDE -> "Auto + Wide"
+                                        }
+                                    )
+                                }
+                            },
+                            onClick = { selectedAmbiwidthMode = mode }
+                        )
+                    }
                     HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                     // Color scheme selector
                     Text(
@@ -492,6 +504,7 @@ fun ShellScreen() {
                     terminalEmulator = currentTerminal,
                     modifier = Modifier.fillMaxSize(),
                     typeface = availableFonts[selectedFont] ?: Typeface.MONOSPACE,
+                    ambiwidthMode = selectedAmbiwidthMode,
                     backgroundColor = colorSchemes[selectedColorScheme].background,
                     foregroundColor = colorSchemes[selectedColorScheme].foreground,
                     keyboardEnabled = keyboardEnabled,

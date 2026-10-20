@@ -526,7 +526,8 @@ fun Terminal(
     terminalEmulator: TerminalEmulator,
     modifier: Modifier = Modifier,
     typeface: Typeface = Typeface.MONOSPACE,
-    autoProfileFontWidth: Boolean = true,
+    ambiwidthMode: AmbiwidthMode = AmbiwidthMode.AUTO_NARROW,
+    autoProfileFontWidth: Boolean = ambiwidthMode.isAuto,
     initialFontSize: TextUnit = 11.sp,
     minFontSize: TextUnit = 6.sp,
     maxFontSize: TextUnit = 30.sp,
@@ -632,12 +633,17 @@ fun Terminal(
     }
 
     // Dynamic font ambiguous-width profiling
-    LaunchedEffect(terminalEmulator, typeface, autoProfileFontWidth) {
-        if (autoProfileFontWidth) {
-            val wideCodepoints = FontWidthProfiler.profile(typeface)
-            terminalEmulator.setCustomWideCodepoints(wideCodepoints)
+    LaunchedEffect(terminalEmulator, typeface, ambiwidthMode, autoProfileFontWidth) {
+        val effectiveMode = if (!autoProfileFontWidth) {
+            if (ambiwidthMode.fallbackWide) AmbiwidthMode.WIDE else AmbiwidthMode.NARROW
         } else {
-            terminalEmulator.setCustomWideCodepoints(null)
+            ambiwidthMode
+        }
+        if (effectiveMode.isAuto) {
+            val wideCodepoints = FontWidthProfiler.profile(typeface)
+            terminalEmulator.setAmbiwidthMode(effectiveMode, wideCodepoints)
+        } else {
+            terminalEmulator.setAmbiwidthMode(effectiveMode, null)
         }
     }
 

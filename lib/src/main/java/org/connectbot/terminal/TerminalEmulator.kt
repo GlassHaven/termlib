@@ -303,6 +303,9 @@ sealed interface TerminalEmulator : AutoCloseable {
     /** Changing policy cancels in-progress and pending image uploads. */
     fun setInlineImages(inlineImages: InlineImages)
 
+    /** Current ambiwidth mode controlling ambiguous character widths. */
+    val ambiwidthMode: AmbiwidthMode
+
     /** Toggle East Asian Ambiguous-width characters as double-width. */
     fun setAmbiwidth(enabled: Boolean)
 
@@ -311,6 +314,11 @@ sealed interface TerminalEmulator : AutoCloseable {
      * When set, this overrides [ambiwidth] for the specified characters.
      */
     fun setCustomWideCodepoints(codepoints: IntArray?)
+
+    /**
+     * Set the [AmbiwidthMode] and optional custom double-width codepoints.
+     */
+    fun setAmbiwidthMode(mode: AmbiwidthMode, codepoints: IntArray? = null)
 
     /** Physical cell dimensions used by image placement; defaults to 8 by 16 pixels. */
     fun setCellPixelSize(width: Int, height: Int)
@@ -414,28 +422,32 @@ class TerminalEmulatorFactory {
             autoDetectUrls: Boolean = false,
             boldAsBright: Boolean = true,
             ambiwidth: Boolean = false,
+            ambiwidthMode: AmbiwidthMode? = null,
             maxScrollbackLines: Int = 1000,
             inlineImages: InlineImages = InlineImages.Off,
             xtversion: String? = null,
-        ): TerminalEmulator = TerminalEmulatorImpl(
-            looper = looper,
-            initialRows = initialRows,
-            initialCols = initialCols,
-            defaultForeground = defaultForeground,
-            defaultBackground = defaultBackground,
-            onKeyboardInput = onKeyboardInput,
-            onBell = onBell,
-            onResize = onResize,
-            onClipboardCopy = onClipboardCopy,
-            onProgressChange = onProgressChange,
-            enableAltScreen = enableAltScreen,
-            autoDetectUrls = autoDetectUrls,
-            boldAsBright = boldAsBright,
-            ambiwidth = ambiwidth,
-            maxScrollbackLines = maxScrollbackLines,
-            inlineImages = inlineImages,
-            xtversion = xtversion,
-        )
+        ): TerminalEmulator {
+            val resolvedMode = ambiwidthMode ?: if (ambiwidth) AmbiwidthMode.WIDE else AmbiwidthMode.NARROW
+            return TerminalEmulatorImpl(
+                looper = looper,
+                initialRows = initialRows,
+                initialCols = initialCols,
+                defaultForeground = defaultForeground,
+                defaultBackground = defaultBackground,
+                onKeyboardInput = onKeyboardInput,
+                onBell = onBell,
+                onResize = onResize,
+                onClipboardCopy = onClipboardCopy,
+                onProgressChange = onProgressChange,
+                enableAltScreen = enableAltScreen,
+                autoDetectUrls = autoDetectUrls,
+                boldAsBright = boldAsBright,
+                ambiwidthMode = resolvedMode,
+                maxScrollbackLines = maxScrollbackLines,
+                inlineImages = inlineImages,
+                xtversion = xtversion,
+            )
+        }
     }
 }
 
@@ -485,14 +497,18 @@ internal class TerminalEmulatorImpl(
     override val autoDetectUrls: Boolean = false,
     override val boldAsBright: Boolean = true,
     ambiwidth: Boolean = false,
+    ambiwidthMode: AmbiwidthMode = if (ambiwidth) AmbiwidthMode.WIDE else AmbiwidthMode.NARROW,
     maxScrollbackLines: Int = 1000,
     inlineImages: InlineImages = InlineImages.Off,
     xtversion: String? = null,
 ) : TerminalEmulator,
     TerminalCallbacks {
 
-    override var ambiwidth: Boolean = ambiwidth
+    override var ambiwidthMode: AmbiwidthMode = ambiwidthMode
         private set
+
+    override val ambiwidth: Boolean
+        get() = ambiwidthMode.fallbackWide
 
     // Handler for escaping native mutex
     private val handler = Handler(looper)
@@ -574,19 +590,25 @@ internal class TerminalEmulatorImpl(
     override val inlineImages: InlineImages get() = imagePolicy
 
     override fun setAmbiwidth(enabled: Boolean): Unit = synchronized(damageLock) {
-        ambiwidth = enabled
-        customWideCodepoints = null
-        terminalNative.setCustomWideChars(null)
-        terminalNative.setAmbiwidth(enabled)
-        propertyChanged = true
-        requestProcessPendingUpdatesLocked()
+        setAmbiwidthMode(if (enabled) AmbiwidthMode.WIDE else AmbiwidthMode.NARROW, null)
     }
 
     private var customWideCodepoints: IntArray? = null
 
     override fun setCustomWideCodepoints(codepoints: IntArray?): Unit = synchronized(damageLock) {
+        val mode = if (codepoints != null) {
+            if (ambiwidthMode.fallbackWide) AmbiwidthMode.AUTO_WIDE else AmbiwidthMode.AUTO_NARROW
+        } else {
+            if (ambiwidthMode.fallbackWide) AmbiwidthMode.WIDE else AmbiwidthMode.NARROW
+        }
+        setAmbiwidthMode(mode, codepoints)
+    }
+
+    override fun setAmbiwidthMode(mode: AmbiwidthMode, codepoints: IntArray?): Unit = synchronized(damageLock) {
+        ambiwidthMode = mode
         customWideCodepoints = codepoints?.clone()?.apply { sort() }
         terminalNative.setCustomWideChars(customWideCodepoints)
+        terminalNative.setAmbiwidth(mode.fallbackWide)
         propertyChanged = true
         requestProcessPendingUpdatesLocked()
     }
@@ -713,8 +735,8 @@ internal class TerminalEmulatorImpl(
                 setCustomWideChars(customWideCodepoints)
             } else {
                 setCustomWideChars(null)
-                setAmbiwidth(ambiwidth)
             }
+            setAmbiwidth(ambiwidthMode.fallbackWide)
         }
     }
     private val terminalNative by terminalNativeDelegate
@@ -1956,11 +1978,12 @@ internal class TerminalEmulatorImpl(
         val custom = customWideCodepoints
         if (custom != null) {
             if (custom.binarySearch(codepoint) >= 0) return true
+            if (FontWidthProfiler.isProfiledAmbiguous(codepoint)) return false
         }
         val eastAsianWidth = UCharacter.getIntPropertyValue(codepoint, UProperty.EAST_ASIAN_WIDTH)
         return eastAsianWidth == UCharacter.EastAsianWidth.FULLWIDTH ||
             eastAsianWidth == UCharacter.EastAsianWidth.WIDE ||
-            (custom == null && ambiwidth && eastAsianWidth == UCharacter.EastAsianWidth.AMBIGUOUS)
+            (ambiwidthMode.fallbackWide && eastAsianWidth == UCharacter.EastAsianWidth.AMBIGUOUS)
     }
 
     private fun storeSegmentText(row: Int, segment: SemanticSegment, line: TerminalLine) {

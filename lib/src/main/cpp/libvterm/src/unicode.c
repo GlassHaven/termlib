@@ -327,6 +327,17 @@ INTERNAL int vterm_unicode_width(uint32_t codepoint)
       else
         high = mid - 1;
     }
+
+    // Unprofiled ambiguous codepoints (e.g. Private Use Area) fall back to g_ambiwidth:
+    // AUTO_WIDE (g_ambiwidth == 1) -> 2 cells; AUTO_NARROW (g_ambiwidth == 0) -> 1 cell.
+    if ((codepoint >= 0xE000 && codepoint <= 0xF8FF) ||
+        (codepoint >= 0xF0000 && codepoint <= 0x10FFFD)) {
+      if (g_ambiwidth)
+        return 2;
+      return mk_wcwidth(codepoint);
+    }
+
+    // All profiled ambiguous characters not in g_custom_wide_chars measured narrow.
     return mk_wcwidth(codepoint);
   }
 

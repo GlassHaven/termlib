@@ -111,6 +111,28 @@ object FontWidthProfiler {
     }
 
     /**
+     * Check if the given [codepoint] is one of the non-PUA ambiguous characters
+     * profiled by this class.
+     */
+    fun isProfiledAmbiguous(codepoint: Int): Boolean {
+        var low = 0
+        var high = (AMBIGUOUS_INTERVALS.size / 2) - 1
+        while (low <= high) {
+            val mid = (low + high) ushr 1
+            val start = AMBIGUOUS_INTERVALS[mid * 2]
+            val end = AMBIGUOUS_INTERVALS[mid * 2 + 1]
+            if (codepoint < start) {
+                high = mid - 1
+            } else if (codepoint > end) {
+                low = mid + 1
+            } else {
+                return true
+            }
+        }
+        return false
+    }
+
+    /**
      * Clear cached profiling results (useful for testing).
      */
     fun clearCache() {
