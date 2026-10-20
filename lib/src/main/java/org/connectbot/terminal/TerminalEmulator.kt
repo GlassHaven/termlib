@@ -306,6 +306,12 @@ sealed interface TerminalEmulator : AutoCloseable {
     /** Toggle East Asian Ambiguous-width characters as double-width. */
     fun setAmbiwidth(enabled: Boolean)
 
+    /**
+     * Set dynamic custom double-width codepoints measured from font inspection.
+     * When set, this overrides [ambiwidth] for the specified characters.
+     */
+    fun setCustomWideCodepoints(codepoints: IntArray?)
+
     /** Physical cell dimensions used by image placement; defaults to 8 by 16 pixels. */
     fun setCellPixelSize(width: Int, height: Int)
 }
@@ -407,6 +413,7 @@ class TerminalEmulatorFactory {
             enableAltScreen: Boolean = true,
             autoDetectUrls: Boolean = false,
             boldAsBright: Boolean = true,
+            ambiwidth: Boolean = false,
             maxScrollbackLines: Int = 1000,
             inlineImages: InlineImages = InlineImages.Off,
             xtversion: String? = null,
@@ -424,6 +431,7 @@ class TerminalEmulatorFactory {
             enableAltScreen = enableAltScreen,
             autoDetectUrls = autoDetectUrls,
             boldAsBright = boldAsBright,
+            ambiwidth = ambiwidth,
             maxScrollbackLines = maxScrollbackLines,
             inlineImages = inlineImages,
             xtversion = xtversion,
@@ -476,12 +484,15 @@ internal class TerminalEmulatorImpl(
     private val enableAltScreen: Boolean = true,
     override val autoDetectUrls: Boolean = false,
     override val boldAsBright: Boolean = true,
-    override val ambiwidth: Boolean = false,
+    ambiwidth: Boolean = false,
     maxScrollbackLines: Int = 1000,
     inlineImages: InlineImages = InlineImages.Off,
     xtversion: String? = null,
 ) : TerminalEmulator,
     TerminalCallbacks {
+
+    override var ambiwidth: Boolean = ambiwidth
+        private set
 
     // Handler for escaping native mutex
     private val handler = Handler(looper)
@@ -562,7 +573,23 @@ internal class TerminalEmulatorImpl(
 
     override val inlineImages: InlineImages get() = imagePolicy
 
-    override fun setAmbiwidth(enabled: Boolean) { terminalNative.setAmbiwidth(enabled) }
+    override fun setAmbiwidth(enabled: Boolean): Unit = synchronized(damageLock) {
+        ambiwidth = enabled
+        customWideCodepoints = null
+        terminalNative.setCustomWideChars(null)
+        terminalNative.setAmbiwidth(enabled)
+        propertyChanged = true
+        requestProcessPendingUpdatesLocked()
+    }
+
+    private var customWideCodepoints: IntArray? = null
+
+    override fun setCustomWideCodepoints(codepoints: IntArray?): Unit = synchronized(damageLock) {
+        customWideCodepoints = codepoints?.clone()?.apply { sort() }
+        terminalNative.setCustomWideChars(customWideCodepoints)
+        propertyChanged = true
+        requestProcessPendingUpdatesLocked()
+    }
 
     override fun setInlineImages(inlineImages: InlineImages): Unit = synchronized(damageLock) {
         val oldLimits = imageStore.limits
@@ -681,6 +708,12 @@ internal class TerminalEmulatorImpl(
             resize(initialRows, initialCols)
             if (setBoldHighbright(boldAsBright) != 0) {
                 Log.e(TAG, "Failed to set boldAsBright=$boldAsBright")
+            }
+            if (customWideCodepoints != null) {
+                setCustomWideChars(customWideCodepoints)
+            } else {
+                setCustomWideChars(null)
+                setAmbiwidth(ambiwidth)
             }
         }
     }
@@ -1917,16 +1950,17 @@ internal class TerminalEmulatorImpl(
 
     private fun isCombiningCharacter(char: Char): Boolean = UCharacter.hasBinaryProperty(char.code, UProperty.GRAPHEME_EXTEND)
 
-    private fun isFullwidthCharacter(char: Char): Boolean {
-        val eastAsianWidth = UCharacter.getIntPropertyValue(char.code, UProperty.EAST_ASIAN_WIDTH)
-        return eastAsianWidth == UCharacter.EastAsianWidth.FULLWIDTH ||
-            eastAsianWidth == UCharacter.EastAsianWidth.WIDE
-    }
+    private fun isFullwidthCharacter(char: Char): Boolean = isFullwidthCodepoint(char.code)
 
     private fun isFullwidthCodepoint(codepoint: Int): Boolean {
+        val custom = customWideCodepoints
+        if (custom != null) {
+            if (custom.binarySearch(codepoint) >= 0) return true
+        }
         val eastAsianWidth = UCharacter.getIntPropertyValue(codepoint, UProperty.EAST_ASIAN_WIDTH)
         return eastAsianWidth == UCharacter.EastAsianWidth.FULLWIDTH ||
-            eastAsianWidth == UCharacter.EastAsianWidth.WIDE
+            eastAsianWidth == UCharacter.EastAsianWidth.WIDE ||
+            (custom == null && ambiwidth && eastAsianWidth == UCharacter.EastAsianWidth.AMBIGUOUS)
     }
 
     private fun storeSegmentText(row: Int, segment: SemanticSegment, line: TerminalLine) {

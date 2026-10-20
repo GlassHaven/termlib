@@ -502,6 +502,7 @@ private const val DOUBLE_UNDERLINE_SPACING = 2f
  * @param terminalEmulator The terminal emulator containing terminal state
  * @param modifier Modifier for the composable
  * @param typeface Typeface for terminal text (default: Typeface.MONOSPACE)
+ * @param autoProfileFontWidth Automatically profile font glyph advance widths to determine East Asian Ambiguous character widths (default: true)
  * @param initialFontSize Initial font size for terminal text (can be changed with pinch-to-zoom)
  * @param minFontSize Minimum font size for pinch-to-zoom
  * @param maxFontSize Maximum font size for pinch-to-zoom
@@ -525,6 +526,7 @@ fun Terminal(
     terminalEmulator: TerminalEmulator,
     modifier: Modifier = Modifier,
     typeface: Typeface = Typeface.MONOSPACE,
+    autoProfileFontWidth: Boolean = true,
     initialFontSize: TextUnit = 11.sp,
     minFontSize: TextUnit = 6.sp,
     maxFontSize: TextUnit = 30.sp,
@@ -627,6 +629,16 @@ fun Terminal(
     if (LocalInspectionMode.current) {
         TerminalPreview(modifier, backgroundColor, foregroundColor)
         return
+    }
+
+    // Dynamic font ambiguous-width profiling
+    LaunchedEffect(terminalEmulator, typeface, autoProfileFontWidth) {
+        if (autoProfileFontWidth) {
+            val wideCodepoints = FontWidthProfiler.profile(typeface)
+            terminalEmulator.setCustomWideCodepoints(wideCodepoints)
+        } else {
+            terminalEmulator.setCustomWideCodepoints(null)
+        }
     }
 
     TerminalWithAccessibility(

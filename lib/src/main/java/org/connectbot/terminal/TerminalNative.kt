@@ -225,6 +225,14 @@ internal class TerminalNative(
     fun setAmbiwidth(enabled: Boolean): Int = withPtr { nativeSetAmbiwidth(it, enabled) }
 
     /**
+     * Set dynamic custom double-width codepoints measured from font inspection.
+     *
+     * @param chars Sorted array of codepoints to treat as double-width, or null to clear
+     * @return 0 on success, -1 on error
+     */
+    fun setCustomWideChars(chars: IntArray?): Int = withPtr { nativeSetCustomWideChars(it, chars) }
+
+    /**
      * Close the terminal and release native resources.
      * After calling this, the Terminal instance cannot be used.
      */
@@ -274,6 +282,7 @@ internal class TerminalNative(
     private external fun nativeGetLineContinuation(ptr: Long, callbacks: TerminalCallbacks, row: Int): Boolean
     private external fun nativeSetBoldHighbright(ptr: Long, callbacks: TerminalCallbacks, enabled: Boolean): Int
     private external fun nativeSetAmbiwidth(ptr: Long, enabled: Boolean): Int
+    private external fun nativeSetCustomWideChars(ptr: Long, chars: IntArray?): Int
 
     companion object {
         private const val LIBRARY_NAME = "jni_cb_term"
