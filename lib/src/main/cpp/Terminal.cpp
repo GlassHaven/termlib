@@ -1582,4 +1582,25 @@ Java_org_connectbot_terminal_TerminalNative_nativeSetAmbiwidth(JNIEnv* /* env */
     return 0;
 }
 
+JNIEXPORT jint JNICALL
+Java_org_connectbot_terminal_TerminalNative_nativeSetCustomWideChars(JNIEnv* env, jobject /* thiz */,
+                                                                    jlong /* ptr */, jintArray wideChars) {
+    if (!wideChars) {
+        vterm_set_custom_wide_chars(nullptr, 0);
+        return 0;
+    }
+    jsize len = env->GetArrayLength(wideChars);
+    if (len <= 0) {
+        vterm_set_custom_wide_chars(nullptr, 0);
+        return 0;
+    }
+    jint* elements = env->GetIntArrayElements(wideChars, nullptr);
+    if (!elements) {
+        return -1;
+    }
+    vterm_set_custom_wide_chars(reinterpret_cast<const uint32_t*>(elements), len);
+    env->ReleaseIntArrayElements(wideChars, elements, JNI_ABORT);
+    return 0;
+}
+
 } // extern "C"

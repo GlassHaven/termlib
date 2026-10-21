@@ -1,3 +1,8 @@
+=== Haven #719 Dynamic Font-Width Verification ===
+밭밭▼▼△△◆◆□□◇◇가가
+Greek (1-cell narrow): ααββγγδδΩΩ
+Symbols (2-cell wide): ▼▼▲▲ ◈◈◆◆ ①①
+
 Unicode Characters Test:
 
 Box Drawing:
@@ -45,3 +50,7 @@ CJK Characters (Fullwidth):
 Combining Characters:
 á é í ó ú (with accents)
 ñ ç ü ö ä (with diacritics)
+
+=== Haven #719 Test ===
+밭밭▼▼△△◆◆□□◇◇가가
+▼▼▲▲ ◈◈◆◆ ─━ ⅰⅰⅠⅠ ①①

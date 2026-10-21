@@ -31,6 +31,8 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.connectbot.terminal.AmbiwidthMode
+import org.connectbot.terminal.FontWidthProfiler
 import org.connectbot.terminal.Terminal
 import org.connectbot.terminal.TerminalEmulator
 import org.connectbot.terminal.TerminalEmulatorFactory
@@ -52,13 +54,14 @@ data class TerminalSession(
  * Create a TerminalEmulator with keyboard echo for testing.
  * In a real app, onKeyboardInput would write to PTY.
  */
-private fun createTerminalEmulator(): TerminalEmulator {
+private fun createTerminalEmulator(mode: AmbiwidthMode = AmbiwidthMode.NARROW): TerminalEmulator {
     lateinit var manager: TerminalEmulator
     manager = TerminalEmulatorFactory.create(
         initialRows = 24,
         initialCols = 80,
         defaultForeground = Color.White,
         defaultBackground = Color.Black,
+        ambiwidthMode = mode,
         onKeyboardInput = { data ->
             // Echo keyboard input back to terminal for testing
             // In a real app, this would write to PTY which would echo back
@@ -134,25 +137,34 @@ fun ShellScreen() {
     }
     var selectedColorScheme by remember { mutableStateOf(0) }
 
+    var selectedAmbiwidthMode by remember { mutableStateOf(AmbiwidthMode.NARROW) }
+
     // Font selection
     val availableFonts = remember {
         mapOf(
+            "NanumGothicCoding" to Typeface.createFromAsset(context.assets, "fonts/NanumGothicCoding.ttf"),
             "Monospace" to Typeface.MONOSPACE,
             "0xProto" to Typeface.createFromAsset(context.assets, "fonts/0xProtoNerdFontMono-Regular.ttf")
         )
     }
-    var selectedFont by remember { mutableStateOf("0xProto Regular") }
+    var selectedFont by remember { mutableStateOf("NanumGothicCoding") }
     var showFontMenu by remember { mutableStateOf(false) }
 
     // Create separate TerminalEmulator for each session (simulating multiple connections)
     val sessions = remember {
         listOf(
-            TerminalSession("Welcome", createTerminalEmulator(), R.raw.test_output),
-            TerminalSession("256 Colors", createTerminalEmulator(), R.raw.test_output),
-            TerminalSession("Attributes", createTerminalEmulator(), R.raw.test_attributes),
-            TerminalSession("Unicode", createTerminalEmulator(), R.raw.test_unicode),
-            TerminalSession("Scrolling", createTerminalEmulator(), R.raw.test_scroll)
+            TerminalSession("Welcome", createTerminalEmulator(selectedAmbiwidthMode), R.raw.test_output),
+            TerminalSession("256 Colors", createTerminalEmulator(selectedAmbiwidthMode), R.raw.test_output),
+            TerminalSession("Attributes", createTerminalEmulator(selectedAmbiwidthMode), R.raw.test_attributes),
+            TerminalSession("Unicode", createTerminalEmulator(selectedAmbiwidthMode), R.raw.test_unicode),
+            TerminalSession("Scrolling", createTerminalEmulator(selectedAmbiwidthMode), R.raw.test_scroll)
         )
+    }
+
+    LaunchedEffect(selectedAmbiwidthMode, selectedFont) {
+        val tf = availableFonts[selectedFont] ?: Typeface.MONOSPACE
+        val wideCp = if (selectedAmbiwidthMode.isAuto) FontWidthProfiler.profile(tf) else null
+        sessions.forEach { it.emulator.setAmbiwidthMode(selectedAmbiwidthMode, wideCp) }
     }
 
     // Initialize all sessions once
@@ -290,6 +302,32 @@ fun ShellScreen() {
                     expanded = showSettingsMenu,
                     onDismissRequest = { showSettingsMenu = false }
                 ) {
+                    // Ambiwidth Mode selector
+                    Text(
+                        text = "Ambiwidth Mode",
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    for (mode in AmbiwidthMode.entries) {
+                        DropdownMenuItem(
+                            text = {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (mode == selectedAmbiwidthMode) Text("✓ ") else Text("   ")
+                                    Text(
+                                        when (mode) {
+                                            AmbiwidthMode.NARROW -> "Narrow (1-cell)"
+                                            AmbiwidthMode.AUTO_NARROW -> "Auto + Narrow"
+                                            AmbiwidthMode.WIDE -> "Wide (2-cell)"
+                                            AmbiwidthMode.AUTO_WIDE -> "Auto + Wide"
+                                        }
+                                    )
+                                }
+                            },
+                            onClick = { selectedAmbiwidthMode = mode }
+                        )
+                    }
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                     // Color scheme selector
                     Text(
                         text = "Color Scheme",
@@ -466,6 +504,7 @@ fun ShellScreen() {
                     terminalEmulator = currentTerminal,
                     modifier = Modifier.fillMaxSize(),
                     typeface = availableFonts[selectedFont] ?: Typeface.MONOSPACE,
+                    ambiwidthMode = selectedAmbiwidthMode,
                     backgroundColor = colorSchemes[selectedColorScheme].background,
                     foregroundColor = colorSchemes[selectedColorScheme].foreground,
                     keyboardEnabled = keyboardEnabled,
