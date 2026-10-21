@@ -526,7 +526,7 @@ fun Terminal(
     terminalEmulator: TerminalEmulator,
     modifier: Modifier = Modifier,
     typeface: Typeface = Typeface.MONOSPACE,
-    ambiwidthMode: AmbiwidthMode = AmbiwidthMode.AUTO_NARROW,
+    ambiwidthMode: AmbiwidthMode = AmbiwidthMode.NARROW,
     autoProfileFontWidth: Boolean = ambiwidthMode.isAuto,
     initialFontSize: TextUnit = 11.sp,
     minFontSize: TextUnit = 6.sp,

@@ -54,7 +54,7 @@ data class TerminalSession(
  * Create a TerminalEmulator with keyboard echo for testing.
  * In a real app, onKeyboardInput would write to PTY.
  */
-private fun createTerminalEmulator(mode: AmbiwidthMode = AmbiwidthMode.AUTO_NARROW): TerminalEmulator {
+private fun createTerminalEmulator(mode: AmbiwidthMode = AmbiwidthMode.NARROW): TerminalEmulator {
     lateinit var manager: TerminalEmulator
     manager = TerminalEmulatorFactory.create(
         initialRows = 24,
@@ -137,7 +137,7 @@ fun ShellScreen() {
     }
     var selectedColorScheme by remember { mutableStateOf(0) }
 
-    var selectedAmbiwidthMode by remember { mutableStateOf(AmbiwidthMode.AUTO_NARROW) }
+    var selectedAmbiwidthMode by remember { mutableStateOf(AmbiwidthMode.NARROW) }
 
     // Font selection
     val availableFonts = remember {
