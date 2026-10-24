@@ -114,16 +114,25 @@ class TerminalImeLifecycleTest {
         }
     }
 
+    /**
+     * Upstream added this test alongside a `resizeSuspended` parameter that
+     * let the host pin the terminal's dimensions across a transient popup
+     * layout. This fork has no such parameter: a transient layout is handled
+     * by holding the pending PTY resize until window focus returns (#554),
+     * so the round-trip is asserted against that mechanism instead — the
+     * popup's own layout must never reach the emulator, and the settle below
+     * is longer than the commit debounce plus the IME-restore grace, so any
+     * resize the hold failed to suppress would have been applied by now.
+     */
     @Test
     fun menuRoundTripRetainsTerminalDimensions() {
         val menu = mutableStateOf(false)
-        val suspended = mutableStateOf(false)
         val sizes = CopyOnWriteArrayList<TerminalDimensions>()
         val terminal = TerminalEmulatorFactory.create(onResize = { sizes.add(it) }) as TerminalEmulatorImpl
         instrumentation.runOnMainSync {
             setContent {
                 Box(Modifier.fillMaxSize().imePadding()) {
-                    Terminal(terminal, Modifier.fillMaxSize(), keyboardEnabled = true, resizeSuspended = suspended.value)
+                    Terminal(terminal, Modifier.fillMaxSize(), keyboardEnabled = true)
                     DropdownMenu(expanded = menu.value, onDismissRequest = { menu.value = false }) {
                         Text("Settings")
                     }
@@ -132,20 +141,16 @@ class TerminalImeLifecycleTest {
         }
         waitUntil("Keyboard did not open on entry") { imeVisible() }
         settleLayout()
-        terminal.commands.call { Unit }
         val original = terminal.dimensions
         sizes.clear()
-        instrumentation.runOnMainSync {
-            suspended.value = true
-            menu.value = true
-        }
+        instrumentation.runOnMainSync { menu.value = true }
         settleLayout()
         instrumentation.runOnMainSync { menu.value = false }
         waitUntil("Menu did not restore window focus and keyboard") { activity.hasWindowFocus() && imeVisible() }
+        // Longer than RESIZE_DEBOUNCE_MS + IME_RESTORE_GRACE_MS so a resize
+        // the pending-resize hold did not suppress is committed before we look.
         settleLayout()
-        instrumentation.runOnMainSync { suspended.value = false }
         settleLayout()
-        terminal.commands.call { Unit }
         assertTrue("Temporary menu layouts must not reach the remote PTY (original=$original): $sizes", sizes.isEmpty())
     }
 }

@@ -175,6 +175,8 @@ dependencies {
     testImplementation(composeBom)
     testImplementation(libs.androidx.compose.ui.test.junit4)
     testImplementation(libs.mockk)
+    androidTestImplementation(composeBom)
+    androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.junit)
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     androidTestImplementation("androidx.test:runner:1.7.0")
