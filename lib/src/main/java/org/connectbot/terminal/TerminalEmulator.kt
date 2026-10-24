@@ -517,6 +517,11 @@ internal class TerminalEmulatorImpl(
 
     override var backfillScrollbackOnGrow: Boolean = true
 
+    /** #749 test seam — see call site in updateLine(). Never set in production. */
+    @JvmField
+    @VisibleForTesting
+    var onCellRunFetchedForTesting: (() -> Unit)? = null
+
     override fun setCellPixelSize(width: Int, height: Int): Unit = synchronized(damageLock) {
         require(width > 0 && height > 0)
         imageStore.updateCellSize(width, height)
@@ -1540,6 +1545,11 @@ internal class TerminalEmulatorImpl(
         while (col < cols) {
             cellRun.reset()
             val runLength = terminalNative.getCellRun(row, col, cellRun)
+            // #749 test seam: fires between getCellRun calls, i.e. exactly where
+            // a concurrent writeInput() can land on a real device (each getCellRun
+            // takes and releases the native lock independently). Tests inject a
+            // write here to prove the row rebuild stitches two native states.
+            onCellRunFetchedForTesting?.invoke()
 
             if (runLength <= 0) {
                 // Fill remaining with empty cells
