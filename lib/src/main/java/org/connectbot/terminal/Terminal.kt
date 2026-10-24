@@ -131,7 +131,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import org.slf4j.LoggerFactory
 import kotlin.math.ceil
+
+private val logger = LoggerFactory.getLogger("org.connectbot.terminal.Terminal")
 
 /**
  * Gesture type for unified gesture handling state machine.
@@ -852,26 +855,26 @@ internal fun TerminalWithAccessibility(
         // ImeInputView.onDetachedFromWindow().
         val disposingView = imeInputView
         onDispose {
-            Log.d("Terminal", "Disposing Terminal - resetting interop view")
+            logger.debug("Disposing Terminal - resetting interop view")
             disposingView?.onInteropReset()
         }
     }
 
     // React to IME state changes
     LaunchedEffect(shouldShowIme, imeInputView) {
-        Log.d("Terminal", "IME state changed: shouldShowIme=$shouldShowIme (imeInputView=$imeInputView)")
+        logger.debug("IME state changed: shouldShowIme=$shouldShowIme (imeInputView=$imeInputView)")
 
         imeInputView?.let { view ->
             if (shouldShowIme) {
-                Log.d("Terminal", "Showing IME via InputMethodManager")
+                logger.debug("Showing IME via InputMethodManager")
                 delay(IME_SHOW_DELAY_MS)
                 view.showIme()
-                Log.d("Terminal", "IME show completed")
+                logger.debug("IME show completed")
                 onImeVisibilityChanged(true)
             } else {
-                Log.d("Terminal", "Hiding IME via InputMethodManager")
+                logger.debug("Hiding IME via InputMethodManager")
                 view.hideIme()
-                Log.d("Terminal", "IME hide completed")
+                logger.debug("IME hide completed")
                 onImeVisibilityChanged(false)
             }
         }

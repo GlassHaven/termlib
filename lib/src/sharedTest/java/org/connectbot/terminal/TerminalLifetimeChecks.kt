@@ -184,6 +184,10 @@ abstract class TerminalLifetimeChecks {
             it.isAccessible = true
             it.get(null) as java.util.concurrent.ExecutorService
         }
+        val maintenance = InlineImageStore::class.java.getDeclaredField("maintenance").let {
+            it.isAccessible = true
+            it.get(terminal.imageStore) as java.util.concurrent.ExecutorService
+        }
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
         decoder.execute {
@@ -198,22 +202,21 @@ abstract class TerminalLifetimeChecks {
             assertTrue(asset.pending)
             terminal.close()
             release.countDown()
-            // Drain the single-threaded decoder; its completion hops to the
-            // store's maintenance executor, which the same drain ordering
-            // covers. Poll for the completion landing rather than pumping a
-            // dispatcher this fork does not have.
+            // Drain the single-threaded decoder, then drain the store's single-
+            // threaded maintenance executor onto which decode completion hops.
             decoder.submit {}.get(5, TimeUnit.SECONDS)
-            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
-            while (asset.pending && System.nanoTime() < deadline) Thread.sleep(10)
-            assertFalse(asset.pending)
-            // Fork semantics: close() does not clear the image store, so the
-            // late decode publishes into the still-registered asset instead of
-            // being dropped as upstream does. The pixels are then owned by the
-            // store and become collectable with the emulator — which the JNI
-            // cycle fix is what guarantees. What this test holds is that the
-            // completion lands cleanly (no use-after-free, no dangling borrow)
-            // rather than upstream's earlier-release contract.
-            assertNotNull(asset.bitmap)
+            maintenance.submit {}.get(5, TimeUnit.SECONDS)
+            synchronized(terminal.imageStore) {
+                assertFalse(asset.pending)
+                // Fork semantics: close() does not clear the image store, so the
+                // late decode publishes into the still-registered asset instead of
+                // being dropped as upstream does. The pixels are then owned by the
+                // store and become collectable with the emulator — which the JNI
+                // cycle fix is what guarantees. What this test holds is that the
+                // completion lands cleanly (no use-after-free, no dangling borrow)
+                // rather than upstream's earlier-release contract.
+                assertNotNull(asset.bitmap)
+            }
         } finally {
             release.countDown()
             terminal.close()

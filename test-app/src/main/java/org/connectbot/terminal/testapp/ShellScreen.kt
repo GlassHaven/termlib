@@ -29,6 +29,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.connectbot.terminal.AmbiwidthMode
@@ -165,6 +166,13 @@ fun ShellScreen() {
         val tf = availableFonts[selectedFont] ?: Typeface.MONOSPACE
         val wideCp = if (selectedAmbiwidthMode.isAuto) FontWidthProfiler.profile(tf) else null
         sessions.forEach { it.emulator.setAmbiwidthMode(selectedAmbiwidthMode, wideCp) }
+    }
+
+    DisposableEffect(sessions) {
+        onDispose {
+            scope.cancel()
+            sessions.forEach { it.emulator.close() }
+        }
     }
 
     // Initialize all sessions once

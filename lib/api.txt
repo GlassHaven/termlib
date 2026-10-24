@@ -160,6 +160,7 @@ package org.connectbot.terminal {
     method public void moveSelectionRight();
     method public void moveSelectionUp();
     method public void selectAll();
+    method public default void selectAllVisible();
     method public void setSelectionMode(org.connectbot.terminal.SelectionMode mode);
     method public void startSelection(optional org.connectbot.terminal.SelectionMode mode);
     method public void toggleSelection();
@@ -205,9 +206,10 @@ package org.connectbot.terminal {
     property public int widthPixels;
   }
 
-  public sealed nonexhaustive interface TerminalEmulator {
+  public sealed nonexhaustive interface TerminalEmulator extends java.lang.AutoCloseable {
     method public void applyColorScheme(int[] ansiColors, int defaultForeground, int defaultBackground);
     method public void clearScreen();
+    method public void close();
     method @Deprecated public default void dispatchCharacter(int modifiers, char ch);
     method public void dispatchCharacter(int modifiers, int codepoint);
     method public void dispatchKey(int modifiers, int key);
@@ -241,7 +243,7 @@ package org.connectbot.terminal {
   }
 
   public final class TerminalKt {
-    method @KotlinOnly @androidx.compose.runtime.Composable public static void Terminal(org.connectbot.terminal.TerminalEmulator terminalEmulator, optional androidx.compose.ui.Modifier modifier, optional android.graphics.Typeface typeface, optional androidx.compose.ui.unit.TextUnit initialFontSize, optional androidx.compose.ui.unit.TextUnit minFontSize, optional androidx.compose.ui.unit.TextUnit maxFontSize, optional androidx.compose.ui.graphics.Color backgroundColor, optional androidx.compose.ui.graphics.Color foregroundColor, optional androidx.compose.ui.graphics.Color selectionBackgroundColor, optional androidx.compose.ui.graphics.Color selectionForegroundColor, optional boolean keyboardEnabled, optional boolean showSoftKeyboard, optional androidx.compose.ui.focus.FocusRequester focusRequester, optional kotlin.jvm.functions.Function0<kotlin.Unit> onTerminalTap, optional kotlin.jvm.functions.Function1<java.lang.Boolean,kotlin.Unit> onImeVisibilityChanged, optional kotlin.Pair<java.lang.Integer,java.lang.Integer>? forcedSize, optional org.connectbot.terminal.ModifierManager? modifierManager, optional kotlin.jvm.functions.Function1<org.connectbot.terminal.SelectionController,kotlin.Unit>? onSelectionControllerAvailable, optional kotlin.jvm.functions.Function1<java.lang.String,kotlin.Unit> onHyperlinkClick, optional kotlin.jvm.functions.Function1<org.connectbot.terminal.ComposeController,kotlin.Unit>? onComposeControllerAvailable, optional kotlin.jvm.functions.Function0<kotlin.Unit>? onPasteRequest, optional org.connectbot.terminal.RightAltMode rightAltMode, optional org.connectbot.terminal.DelKeyMode delKeyMode, optional kotlin.jvm.functions.Function1<androidx.compose.ui.input.key.KeyEvent,java.lang.Boolean>? onInterceptKey, optional boolean resizeSuspended);
+    method @KotlinOnly @androidx.compose.runtime.Composable public static void Terminal(org.connectbot.terminal.TerminalEmulator terminalEmulator, optional androidx.compose.ui.Modifier modifier, optional android.graphics.Typeface typeface, optional androidx.compose.ui.unit.TextUnit initialFontSize, optional androidx.compose.ui.unit.TextUnit minFontSize, optional androidx.compose.ui.unit.TextUnit maxFontSize, optional androidx.compose.ui.graphics.Color backgroundColor, optional androidx.compose.ui.graphics.Color foregroundColor, optional androidx.compose.ui.graphics.Color selectionBackgroundColor, optional androidx.compose.ui.graphics.Color selectionForegroundColor, optional boolean keyboardEnabled, optional boolean showSoftKeyboard, optional androidx.compose.ui.focus.FocusRequester focusRequester, optional kotlin.jvm.functions.Function0<kotlin.Unit> onTerminalTap, optional kotlin.jvm.functions.Function1<java.lang.Boolean,kotlin.Unit> onImeVisibilityChanged, optional kotlin.Pair<java.lang.Integer,java.lang.Integer>? forcedSize, optional org.connectbot.terminal.ModifierManager? modifierManager, optional kotlin.jvm.functions.Function1<org.connectbot.terminal.SelectionController,kotlin.Unit>? onSelectionControllerAvailable, optional kotlin.jvm.functions.Function1<java.lang.String,kotlin.Unit> onHyperlinkClick, optional kotlin.jvm.functions.Function1<org.connectbot.terminal.ComposeController,kotlin.Unit>? onComposeControllerAvailable, optional kotlin.jvm.functions.Function0<kotlin.Unit>? onPasteRequest, optional org.connectbot.terminal.RightAltMode rightAltMode, optional org.connectbot.terminal.DelKeyMode delKeyMode, optional kotlin.jvm.functions.Function1<androidx.compose.ui.input.key.KeyEvent,java.lang.Boolean>? onInterceptKey, optional boolean resizeSuspended, optional kotlin.jvm.functions.Function1<java.lang.Integer,kotlin.Unit>? onPageGesture);
   }
 
   public final class TerminalUrl {

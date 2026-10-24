@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="terminal_selection_copy">कॉपी करें</string>
-    <string name="terminal_selection_more_options">⋮</string>
     <string name="terminal_selection_more_options_description">अधिक विकल्प</string>
     <string name="terminal_selection_select_all">सभी चुनें</string>
     <string name="terminal_selection_share">साझा करें</string>

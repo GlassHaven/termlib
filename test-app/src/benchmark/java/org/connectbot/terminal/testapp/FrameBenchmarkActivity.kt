@@ -21,11 +21,13 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.sp
+import org.connectbot.terminal.InlineImages
 import org.connectbot.terminal.Terminal
 import org.connectbot.terminal.TerminalEmulatorFactory
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.locks.LockSupport
 import kotlin.concurrent.thread
+import kotlin.math.abs
 
 /** Same public-API-only workload is built against both library revisions. */
 class FrameBenchmarkActivity : ComponentActivity() {
@@ -35,7 +37,7 @@ class FrameBenchmarkActivity : ComponentActivity() {
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val currentMode = display?.mode
         val mode = display?.supportedModes?.firstOrNull {
-            kotlin.math.abs(it.refreshRate - 60f) < 0.1f &&
+            abs(it.refreshRate - 60f) < 0.1f &&
                 it.physicalWidth == currentMode?.physicalWidth && it.physicalHeight == currentMode.physicalHeight
         }
         window.attributes = window.attributes.apply {
@@ -44,7 +46,7 @@ class FrameBenchmarkActivity : ComponentActivity() {
         }
         val workload = intent.getStringExtra("workload") ?: "text"
         var outputBytes = 0L
-        val terminal = TerminalEmulatorFactory.create(initialRows = 24, initialCols = 80, onKeyboardInput = {
+        val terminal = TerminalEmulatorFactory.create(initialRows = 24, initialCols = 80, inlineImages = if (workload in listOf("png", "rgba", "animation")) InlineImages.On() else InlineImages.Off, onKeyboardInput = {
             outputBytes += it.size
             Trace.setCounter("terminal.benchmark.outputBytes", outputBytes)
         })

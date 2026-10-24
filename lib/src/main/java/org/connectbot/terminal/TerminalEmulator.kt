@@ -20,17 +20,19 @@ import android.icu.lang.UCharacter
 import android.icu.lang.UProperty
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
 import android.view.Choreographer
 import androidx.annotation.VisibleForTesting
 import androidx.compose.ui.graphics.Color
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import org.slf4j.LoggerFactory
 import java.nio.ByteBuffer
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.startCoroutine
+
+private val logger = LoggerFactory.getLogger("org.connectbot.terminal.TerminalEmulator")
 
 /**
  * URL discovered in terminal output.
@@ -729,7 +731,7 @@ internal class TerminalEmulatorImpl(
         TerminalNative(this, enableAltScreen, xtversion = xtversion).apply {
             resize(initialRows, initialCols)
             if (setBoldHighbright(boldAsBright) != 0) {
-                Log.e(TAG, "Failed to set boldAsBright=$boldAsBright")
+                logger.error("Failed to set boldAsBright=$boldAsBright")
             }
             if (customWideCodepoints != null) {
                 setCustomWideChars(customWideCodepoints)
@@ -764,7 +766,7 @@ internal class TerminalEmulatorImpl(
         try {
             block()
         } catch (closedUnderneathUs: IllegalStateException) {
-            Log.d(TAG, "$what after close, ignoring: ${closedUnderneathUs.message}")
+            logger.debug("$what after close, ignoring: ${closedUnderneathUs.message}")
         }
     }
 
@@ -778,7 +780,7 @@ internal class TerminalEmulatorImpl(
         if (terminalNativeDelegate.isInitialized()) {
             terminalNative.close()
         }
-        Log.d(TAG, "Terminal emulator closed")
+        logger.debug("Terminal emulator closed")
     }
 
     // Parser for OSC sequences
@@ -811,7 +813,7 @@ internal class TerminalEmulatorImpl(
         cols = newCols
         whenOpen("resize") { terminalNative.resize(newRows, newCols) }
         // #272 diagnostics: correlate intermittent blanks with resizes.
-        Log.d(TAG, "resize ${oldRows}x$oldCols -> ${newRows}x$newCols")
+        logger.debug("resize ${oldRows}x$oldCols -> ${newRows}x$newCols")
 
         // Capture current default colors (thread-safe)
         val currentDefaultFg: Color
@@ -2036,7 +2038,6 @@ internal class TerminalEmulatorImpl(
     }
 
     companion object {
-        private const val TAG = "TerminalEmulatorImpl"
         private const val MAX_URL_SCAN_CONTINUATION_ROWS = 6
     }
 }

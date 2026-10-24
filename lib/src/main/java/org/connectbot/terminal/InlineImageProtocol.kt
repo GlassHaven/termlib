@@ -7,7 +7,7 @@ package org.connectbot.terminal
 
 import android.graphics.Rect
 import android.util.Base64
-import android.util.Log
+import org.slf4j.LoggerFactory
 import java.io.BufferedOutputStream
 import java.io.OutputStream
 import java.util.zip.Deflater
@@ -19,6 +19,8 @@ import kotlin.math.min
 
 /** Header cap for non-File OSC 1337 commands (CurrentDir= and friends), upstream TEXT_LIMIT. */
 private const val INLINE_TEXT_LIMIT = 1024 * 1024
+
+private val logger = LoggerFactory.getLogger("org.connectbot.terminal.InlineImageProtocol")
 
 /** OSC/APC parser. Headers are small; binary payloads never pass through a String. */
 internal class InlineImageProtocol(
@@ -93,7 +95,9 @@ internal class InlineImageProtocol(
 
     fun reset() {
         abortUpload()
-        header.setLength(0)
+        header = StringBuilder()
+        keys = emptyMap()
+        command = ""
         discarded = true
     }
 
@@ -166,8 +170,7 @@ internal class InlineImageProtocol(
             }
         } catch (e: Exception) {
             val reason = e.message?.takeIf { it.contains(':') } ?: "EINVAL:invalid image"
-            Log.w(
-                TAG,
+            logger.warn(
                 "Rejected ${if (kitty) "Kitty" else "iTerm2"} inline image " +
                     "(action=${keys["a"]}, format=${keys["f"]}, transport=${keys["t"]}): $reason",
             )
@@ -653,8 +656,4 @@ internal class InlineImageProtocol(
     }
 
     private fun rgba(value: Long): Int = ((value and 255) shl 24 or (value ushr 8)).toInt()
-
-    private companion object {
-        const val TAG = "InlineImageProtocol"
-    }
 }
