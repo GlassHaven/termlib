@@ -1,4 +1,5 @@
 #include "vterm_internal.h"
+#include <pthread.h>
 #include <string.h>
 
 // ### The following from http://www.cl.cam.ac.uk/~mgk25/ucs/wcwidth.c
@@ -286,17 +287,21 @@ static const struct interval fullwidth[] = {
 #include "fullwidth.inc"
 };
 
+static pthread_mutex_t g_unicode_lock = PTHREAD_MUTEX_INITIALIZER;
 static int g_ambiwidth = 0;
 static uint32_t *g_custom_wide_chars = NULL;
 static int g_custom_wide_count = 0;
 
 INTERNAL void vterm_set_ambiwidth(int enabled)
 {
+  pthread_mutex_lock(&g_unicode_lock);
   g_ambiwidth = enabled;
+  pthread_mutex_unlock(&g_unicode_lock);
 }
 
 void vterm_set_custom_wide_chars(const uint32_t *chars, int count)
 {
+  pthread_mutex_lock(&g_unicode_lock);
   if (g_custom_wide_chars) {
     free(g_custom_wide_chars);
     g_custom_wide_chars = NULL;
@@ -309,6 +314,7 @@ void vterm_set_custom_wide_chars(const uint32_t *chars, int count)
       g_custom_wide_count = count;
     }
   }
+  pthread_mutex_unlock(&g_unicode_lock);
 }
 
 INTERNAL int vterm_unicode_width(uint32_t codepoint)
@@ -319,23 +325,28 @@ INTERNAL int vterm_unicode_width(uint32_t codepoint)
   if(bisearch(codepoint, fullwidth, sizeof(fullwidth) / sizeof(fullwidth[0]) - 1))
     return 2;
 
+  pthread_mutex_lock(&g_unicode_lock);
+  const int ambiwidth = g_ambiwidth;
   if (g_custom_wide_chars && g_custom_wide_count > 0) {
     int low = 0, high = g_custom_wide_count - 1;
     while (low <= high) {
       int mid = low + (high - low) / 2;
-      if (g_custom_wide_chars[mid] == codepoint)
+      if (g_custom_wide_chars[mid] == codepoint) {
+        pthread_mutex_unlock(&g_unicode_lock);
         return 2;
+      }
       if (g_custom_wide_chars[mid] < codepoint)
         low = mid + 1;
       else
         high = mid - 1;
     }
+    pthread_mutex_unlock(&g_unicode_lock);
 
     // Unprofiled ambiguous codepoints (e.g. Private Use Area) fall back to g_ambiwidth:
     // AUTO_WIDE (g_ambiwidth == 1) -> 2 cells; AUTO_NARROW (g_ambiwidth == 0) -> 1 cell.
     if ((codepoint >= 0xE000 && codepoint <= 0xF8FF) ||
         (codepoint >= 0xF0000 && codepoint <= 0x10FFFD)) {
-      if (g_ambiwidth)
+      if (ambiwidth)
         return 2;
       return mk_wcwidth(codepoint);
     }
@@ -343,8 +354,9 @@ INTERNAL int vterm_unicode_width(uint32_t codepoint)
     // All profiled ambiguous characters not in g_custom_wide_chars measured narrow.
     return mk_wcwidth(codepoint);
   }
+  pthread_mutex_unlock(&g_unicode_lock);
 
-  if(g_ambiwidth)
+  if(ambiwidth)
     return mk_wcwidth_cjk(codepoint);
 
   return mk_wcwidth(codepoint);

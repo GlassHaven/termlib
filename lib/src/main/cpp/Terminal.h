@@ -98,6 +98,8 @@ public:
 
     // Terminal behavior options
     int setBoldHighbright(int enabled);
+    int setAmbiwidth(int enabled);
+    int setCustomWideChars(const uint32_t* chars, int count);
 
 private:
     // libvterm screen callbacks (called by libvterm while mLock may be held).
