@@ -223,6 +223,8 @@ private:
     jfieldID mDhlField;
     jfieldID mCharsField;
     jfieldID mRunLengthField;
+    jfieldID mCellCountField;
+    jfieldID mCellMetaField;
     jfieldID mImageIdField;
     jfieldID mPlacementIdField;
 

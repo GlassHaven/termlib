@@ -39,10 +39,12 @@
 #define JNI_CHECK_EXCEPTION(env) \
     do { if ((env)->ExceptionCheck()) { (env)->ExceptionDescribe(); (env)->ExceptionClear(); } } while (0)
 
-// Thread-local CharArray pool to eliminate per-frame allocations
-// Each thread gets one reusable CharArray, sized to handle typical cell runs
+// Thread-local CharArray/ByteArray pool to eliminate per-frame allocations
+// Each thread gets reusable arrays sized to handle typical cell runs
 static thread_local jcharArray tls_charArray = nullptr;
 static thread_local jsize tls_charArraySize = 0;
+static thread_local jbyteArray tls_metaArray = nullptr;
+static thread_local jsize tls_metaArraySize = 0;
 
 // Terminal implementation
 Terminal::Terminal(JNIEnv* env, jobject callbacks, int rows, int cols, bool enableAltScreen, const char* xtversion)
@@ -141,6 +143,8 @@ Terminal::Terminal(JNIEnv* env, jobject callbacks, int rows, int cols, bool enab
     mDhlField = env->GetFieldID(mCellRunClass, "dhl", "I");
     mCharsField = env->GetFieldID(mCellRunClass, "chars", "[C");
     mRunLengthField = env->GetFieldID(mCellRunClass, "runLength", "I");
+    mCellCountField = env->GetFieldID(mCellRunClass, "cellCount", "I");
+    mCellMetaField = env->GetFieldID(mCellRunClass, "cellMeta", "[B");
     mImageIdField = env->GetFieldID(mCellRunClass, "imageId", "I");
     mPlacementIdField = env->GetFieldID(mCellRunClass, "placementId", "I");
 
@@ -491,7 +495,9 @@ int Terminal::getCellRun(JNIEnv* env, int row, int col, jobject runObject) {
     // by each cell's width, so it must carry runColumns.
     int runLength = 0;
     int runColumns = 0;
-    jchar chars[256];  // Max run length
+    int cellCount = 0;
+    jchar chars[257];  // Max 256 UTF-16 units + trailing NUL sentinel
+    jbyte cellMeta[256];
 
     // A Kitty unicode-placeholder cell (cell char U+10EEEE) is a marker for an
     // inline-image slice (#583). Its identity comes from the raw foreground
@@ -512,7 +518,7 @@ int Terminal::getCellRun(JNIEnv* env, int row, int col, jobject runObject) {
         placementId = cell.chars[14];
     }
 
-    for (int c = col; c < mCols && runLength < 256; c++) {
+    for (int c = col; c < mCols && runLength < 256 && cellCount < 256; c++) {
         VTermPos currentPos = { row, c };
         VTermScreenCell currentCell;
         vterm_screen_get_cell(mVts, currentPos, &currentCell);
@@ -527,31 +533,37 @@ int Terminal::getCellRun(JNIEnv* env, int row, int col, jobject runObject) {
             break;
         }
 
+        int cellUtf16Len = 0;
+        if (currentCell.chars[0] == 0) {
+            cellUtf16Len = 1;
+        } else {
+            for (int i = 0; i < VTERM_MAX_CHARS_PER_CELL && currentCell.chars[i]; i++) {
+                cellUtf16Len += currentCell.chars[i] > 0xFFFF ? 2 : 1;
+            }
+        }
+        if (runLength + cellUtf16Len > 256) {
+            break;
+        }
+
         // Add character(s) to run
         if (currentCell.chars[0] == 0) {
-            // Empty cell
             chars[runLength++] = ' ';
         } else {
-            // Convert UTF-32 to UTF-16 (handle surrogate pairs). A cell can
-            // emit several combining chars, each up to a 2-jchar surrogate
-            // pair, so the outer `runLength < 256` guard (checked per cell, not
-            // per write) is not enough — bound each write to the buffer size or
-            // a >U+FFFF glyph at the tail would overflow chars[256]. (#24)
             for (int i = 0; i < VTERM_MAX_CHARS_PER_CELL && currentCell.chars[i]; i++) {
                 uint32_t codepoint = currentCell.chars[i];
 
                 if (codepoint <= 0xFFFF) {
-                    if (runLength >= 256) break;
                     chars[runLength++] = (jchar)codepoint;
                 } else {
-                    // Surrogate pair for codepoints > U+FFFF — needs 2 slots.
-                    if (runLength + 2 > 256) break;
                     codepoint -= 0x10000;
                     chars[runLength++] = (jchar)(0xD800 + (codepoint >> 10));
                     chars[runLength++] = (jchar)(0xDC00 + (codepoint & 0x3FF));
                 }
             }
         }
+
+        const int effectiveWidth = imageCell ? 1 : currentCell.width;
+        cellMeta[cellCount++] = static_cast<jbyte>(((effectiveWidth & 0x3) << 6) | (cellUtf16Len & 0x3F));
 
         runColumns += currentCell.width;
 
@@ -590,37 +602,19 @@ int Terminal::getCellRun(JNIEnv* env, int row, int col, jobject runObject) {
     env->SetIntField(runObject, mImageIdField, imageId);
     env->SetIntField(runObject, mPlacementIdField, placementId);
 
-    // Set character array using thread-local pool to eliminate allocations
-    // If this is the first call on this thread, or array is too small, allocate/resize.
-    // A placeholder run covers one cell but expands to several UTF-16 chars
-    // (surrogate pair + payload marks): the copied char region and the
-    // returned cell count split here, because the Kotlin side must walk it
-    // as one cell while still seeing the full glyph.
+    // Always append a NUL sentinel past the copied UTF-16 region so no caller
+    // can pick up stale tail data left in the pooled thread-local array.
     const int charCount = runLength;
-    if (imageCell) {
-        runLength = 1;
-        // Zero the char just past the copied region so the Kotlin walk's
-        // combining/surrogate collection cannot pick up stale tail data left
-        // in the pooled thread-local array by a previous run. The sentinel
-        // is copied along with the glyph below.
-        if (charCount < 256) {
-            chars[charCount] = 0;
-        }
-    } else {
-        // A normal run may contain surrogate pairs (Nerd Font plane-15 icons)
-        // and double-width cells: rebase the UTF-16 write cursor to the column
-        // count Kotlin's updateLine walks.
-        runLength = runColumns;
-    }
+    chars[charCount] = 0;
+    runLength = imageCell ? 1 : runColumns;
 
-    if (tls_charArray == nullptr || tls_charArraySize < charCount) {
-        // Clean up old array if it exists
+    const jsize neededChars = charCount + 1;
+    if (tls_charArray == nullptr || tls_charArraySize < neededChars) {
         if (tls_charArray != nullptr) {
             env->DeleteGlobalRef(tls_charArray);
         }
 
-        // Allocate new array with some headroom (round up to nearest 64)
-        jsize newSize = ((charCount + 63) / 64) * 64;
+        jsize newSize = ((neededChars + 63) / 64) * 64;
         ScopedLocalRef<jcharArray> localArray(env, env->NewCharArray(newSize));
         tls_charArray = (jcharArray)env->NewGlobalRef(localArray);
         tls_charArraySize = newSize;
@@ -628,13 +622,26 @@ int Terminal::getCellRun(JNIEnv* env, int row, int col, jobject runObject) {
         LOGD("Allocated thread-local CharArray: size=%d", newSize);
     }
 
-    // Reuse the thread-local array
-    if (imageCell && charCount < 256) {
-        env->SetCharArrayRegion(tls_charArray, 0, charCount + 1, chars);
-    } else {
-        env->SetCharArrayRegion(tls_charArray, 0, charCount, chars);
+    const jsize neededMeta = cellCount > 0 ? cellCount : 1;
+    if (tls_metaArray == nullptr || tls_metaArraySize < neededMeta) {
+        if (tls_metaArray != nullptr) {
+            env->DeleteGlobalRef(tls_metaArray);
+        }
+
+        jsize newSize = ((neededMeta + 63) / 64) * 64;
+        ScopedLocalRef<jbyteArray> localMeta(env, env->NewByteArray(newSize));
+        tls_metaArray = (jbyteArray)env->NewGlobalRef(localMeta);
+        tls_metaArraySize = newSize;
     }
+
+    env->SetCharArrayRegion(tls_charArray, 0, neededChars, chars);
     env->SetObjectField(runObject, mCharsField, tls_charArray);
+
+    if (cellCount > 0) {
+        env->SetByteArrayRegion(tls_metaArray, 0, cellCount, cellMeta);
+    }
+    env->SetIntField(runObject, mCellCountField, cellCount);
+    env->SetObjectField(runObject, mCellMetaField, tls_metaArray);
 
     env->SetIntField(runObject, mRunLengthField, runLength);
 
@@ -658,11 +665,13 @@ int Terminal::getRowRuns(JNIEnv* env, int row, jobjectArray runObjects) {
         return 0;
     }
 
-    // One reusable char array per run slot, grown on demand. Safe to reuse
-    // across calls for the same reason as tls_charArray above: the Kotlin
-    // side consumes every run of a row before the next getRowRuns call.
+    // Reusable char/meta arrays per run slot, grown on demand. Safe to reuse
+    // across calls on the same thread because updateLine consumes every run of
+    // a row before the next getRowRuns call.
     static thread_local std::vector<jcharArray> tls_runArrays;
     static thread_local std::vector<jsize> tls_runArraySizes;
+    static thread_local std::vector<jbyteArray> tls_runMetaArrays;
+    static thread_local std::vector<jsize> tls_runMetaSizes;
 
     int filledRuns = 0;
     int col = 0;
@@ -686,9 +695,10 @@ int Terminal::getRowRuns(JNIEnv* env, int row, jobjectArray runObjects) {
             placementId = cell.chars[14];
         }
 
-        // Pass 1: measure the run (UTF-16 units and screen columns).
+        // Pass 1: measure the run (UTF-16 units, logical cells, and screen columns).
         int utf16Len = 0;
         int runColumns = 0;
+        int cellCount = 0;
         for (int c = col; c < mCols; c++) {
             VTermPos currentPos = { row, c };
             VTermScreenCell currentCell;
@@ -707,6 +717,7 @@ int Terminal::getRowRuns(JNIEnv* env, int row, jobjectArray runObjects) {
                     utf16Len += currentCell.chars[i] > 0xFFFF ? 2 : 1;
                 }
             }
+            cellCount += 1;
             runColumns += currentCell.width;
             if (currentCell.width == 2) {
                 c++;
@@ -714,29 +725,44 @@ int Terminal::getRowRuns(JNIEnv* env, int row, jobjectArray runObjects) {
         }
         const int endCol = col + runColumns;
 
-        // Grow the slot's array if needed (headroom for the image sentinel).
-        const jsize needed = utf16Len + (imageCell ? 1 : 0);
+        // Grow the slot's arrays if needed (+1 char headroom for NUL sentinel).
+        const jsize neededChars = utf16Len + 1;
+        const jsize neededMeta = cellCount > 0 ? cellCount : 1;
         if (static_cast<size_t>(filledRuns) >= tls_runArrays.size()) {
             tls_runArrays.push_back(nullptr);
             tls_runArraySizes.push_back(0);
+            tls_runMetaArrays.push_back(nullptr);
+            tls_runMetaSizes.push_back(0);
         }
-        if (tls_runArrays[filledRuns] == nullptr || tls_runArraySizes[filledRuns] < needed) {
+        if (tls_runArrays[filledRuns] == nullptr || tls_runArraySizes[filledRuns] < neededChars) {
             if (tls_runArrays[filledRuns] != nullptr) {
                 env->DeleteGlobalRef(tls_runArrays[filledRuns]);
             }
-            jsize newSize = ((needed + 63) / 64) * 64;
+            jsize newSize = ((neededChars + 63) / 64) * 64;
             ScopedLocalRef<jcharArray> localArray(env, env->NewCharArray(newSize));
             tls_runArrays[filledRuns] = (jcharArray)env->NewGlobalRef(localArray);
             tls_runArraySizes[filledRuns] = newSize;
         }
+        if (tls_runMetaArrays[filledRuns] == nullptr || tls_runMetaSizes[filledRuns] < neededMeta) {
+            if (tls_runMetaArrays[filledRuns] != nullptr) {
+                env->DeleteGlobalRef(tls_runMetaArrays[filledRuns]);
+            }
+            jsize newSize = ((neededMeta + 63) / 64) * 64;
+            ScopedLocalRef<jbyteArray> localMeta(env, env->NewByteArray(newSize));
+            tls_runMetaArrays[filledRuns] = (jbyteArray)env->NewGlobalRef(localMeta);
+            tls_runMetaSizes[filledRuns] = newSize;
+        }
 
-        // Pass 2: fill the char array.
-        jchar* scratch = new jchar[needed > 0 ? needed : 1];
+        // Pass 2: fill the char array and exact per-cell boundary/width metadata.
+        jchar* scratch = new jchar[neededChars];
+        jbyte* metaScratch = new jbyte[neededMeta];
         int w = 0;
+        int m = 0;
         for (int c = col; c < endCol; c++) {
             VTermPos currentPos = { row, c };
             VTermScreenCell currentCell;
             vterm_screen_get_cell(mVts, currentPos, &currentCell);
+            const int cellStart = w;
             if (currentCell.chars[0] == 0) {
                 scratch[w++] = ' ';
             } else {
@@ -751,15 +777,22 @@ int Terminal::getRowRuns(JNIEnv* env, int row, jobjectArray runObjects) {
                     }
                 }
             }
+            const int cellUtf16Len = w - cellStart;
+            const int effectiveWidth = imageCell ? 1 : currentCell.width;
+            metaScratch[m++] = static_cast<jbyte>(((effectiveWidth & 0x3) << 6) | (cellUtf16Len & 0x3F));
             if (currentCell.width == 2) {
                 c++;
             }
         }
-        if (imageCell && w < needed) {
-            scratch[w] = 0;  // sentinel: stops Kotlin's combining walk at stale tail
+        // Always terminate with NUL so pooled tail chars from earlier longer runs
+        // cannot bleed into shorter runs.
+        scratch[w] = 0;
+        env->SetCharArrayRegion(tls_runArrays[filledRuns], 0, w + 1, scratch);
+        if (m > 0) {
+            env->SetByteArrayRegion(tls_runMetaArrays[filledRuns], 0, m, metaScratch);
         }
-        env->SetCharArrayRegion(tls_runArrays[filledRuns], 0, needed, scratch);
         delete[] scratch;
+        delete[] metaScratch;
 
         jobject runObject = env->GetObjectArrayElement(runObjects, filledRuns);
 
@@ -786,6 +819,8 @@ int Terminal::getRowRuns(JNIEnv* env, int row, jobjectArray runObjects) {
         env->SetIntField(runObject, mImageIdField, imageId);
         env->SetIntField(runObject, mPlacementIdField, placementId);
         env->SetObjectField(runObject, mCharsField, tls_runArrays[filledRuns]);
+        env->SetIntField(runObject, mCellCountField, m);
+        env->SetObjectField(runObject, mCellMetaField, tls_runMetaArrays[filledRuns]);
         // Same split as getCellRun: an image placeholder covers one cell but
         // expands to several UTF-16 chars; a normal run's field is the column
         // count Kotlin's updateLine walks by.

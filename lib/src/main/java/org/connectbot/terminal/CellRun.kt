@@ -52,6 +52,14 @@ internal class CellRun {
     // Number of cells this run covers (not necessarily chars.size due to wide chars)
     var runLength: Int = 0
 
+    // Number of logical cells packed into [chars] and [cellMeta]
+    var cellCount: Int = 0
+
+    // Per-cell packed metadata for [0 until cellCount]:
+    // bits 0..5 = UTF-16 code unit count for this cell in [chars] (1..32)
+    // bits 6..7 = display column width reported by libvterm (1 or 2)
+    var cellMeta: ByteArray = ByteArray(256)
+
     // Inline image metadata (#583): set when this run is an isolated Kitty
     // unicode-placeholder cell — image id from chars[14] and the placement id
     // from the raw foreground colour. 0 for ordinary runs.
@@ -63,6 +71,7 @@ internal class CellRun {
      */
     fun reset() {
         runLength = 0
+        cellCount = 0
         imageId = 0
         placementId = 0
         bold = false

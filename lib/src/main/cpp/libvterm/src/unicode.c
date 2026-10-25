@@ -313,6 +313,9 @@ void vterm_set_custom_wide_chars(const uint32_t *chars, int count)
 
 INTERNAL int vterm_unicode_width(uint32_t codepoint)
 {
+  if(codepoint == 0x10eeee)
+    return 1;
+
   if(bisearch(codepoint, fullwidth, sizeof(fullwidth) / sizeof(fullwidth[0]) - 1))
     return 2;
 

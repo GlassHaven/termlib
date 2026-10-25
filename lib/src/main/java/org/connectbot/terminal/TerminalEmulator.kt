@@ -1579,67 +1579,107 @@ internal class TerminalEmulatorImpl(
             val fgColor = Color(cellRun.fgRed, cellRun.fgGreen, cellRun.fgBlue)
             val bgColor = Color(cellRun.bgRed, cellRun.bgGreen, cellRun.bgBlue)
 
-            // Process characters in the run
+            // Reconstruct cells directly from libvterm's per-cell UTF-16 length and
+            // display width captured under mLock, so pooled char array tails and
+            // ICU/libvterm Unicode property differences can never shift cell boundaries.
             var charIndex = 0
             var cellsInRun = 0
+            val cellCount = cellRun.cellCount
 
-            while (charIndex < cellRun.chars.size && cellsInRun < runLength) {
-                val char = cellRun.chars[charIndex]
-                if (char == 0.toChar()) break
+            if (cellCount > 0) {
+                for (cellIdx in 0 until cellCount) {
+                    val meta = cellRun.cellMeta[cellIdx].toInt() and 0xFF
+                    val cellUtf16Len = meta and 0x3F
+                    val width = (meta ushr 6).coerceIn(1, 2)
+                    if (cellUtf16Len <= 0 || charIndex + cellUtf16Len > cellRun.chars.size) break
 
-                var combiningChars: MutableList<Char>? = null
-                charIndex++
+                    val char = cellRun.chars[charIndex]
+                    val extraChars = if (cellUtf16Len == 1) {
+                        TerminalLine.EMPTY_COMBINING_CHARS
+                    } else {
+                        val list = ArrayList<Char>(cellUtf16Len - 1)
+                        for (k in 1 until cellUtf16Len) {
+                            list.add(cellRun.chars[charIndex + k])
+                        }
+                        list
+                    }
+                    charIndex += cellUtf16Len
 
-                // Handle surrogate pairs (characters > U+FFFF like emoji)
-                if (char.isHighSurrogate() && charIndex < cellRun.chars.size) {
-                    val nextChar = cellRun.chars[charIndex]
-                    if (nextChar.isLowSurrogate()) {
-                        combiningChars = mutableListOf(nextChar)
+                    cells.add(
+                        TerminalLine.Cell(
+                            char = char,
+                            combiningChars = extraChars,
+                            fgColor = fgColor,
+                            bgColor = bgColor,
+                            bold = cellRun.bold,
+                            italic = cellRun.italic,
+                            underline = cellRun.underline,
+                            blink = cellRun.blink,
+                            reverse = cellRun.reverse,
+                            strike = cellRun.strike,
+                            width = width,
+                            // #583: placeholder runs are isolated, so the run-level ids
+                            // belong to this single cell.
+                            imageId = cellRun.imageId.toLong(),
+                            placementId = cellRun.placementId.toLong(),
+                        ),
+                    )
+                    cellsInRun += width
+                }
+            } else {
+                while (charIndex < cellRun.chars.size && cellsInRun < runLength) {
+                    val char = cellRun.chars[charIndex]
+                    if (char == 0.toChar()) break
+
+                    var combiningChars: MutableList<Char>? = null
+                    charIndex++
+
+                    if (char.isHighSurrogate() && charIndex < cellRun.chars.size) {
+                        val nextChar = cellRun.chars[charIndex]
+                        if (nextChar.isLowSurrogate()) {
+                            combiningChars = mutableListOf(nextChar)
+                            charIndex++
+                        }
+                    }
+
+                    while (charIndex < cellRun.chars.size && isCombiningCharacter(cellRun.chars[charIndex])) {
+                        if (combiningChars == null) {
+                            combiningChars = mutableListOf()
+                        }
+                        combiningChars.add(cellRun.chars[charIndex])
                         charIndex++
                     }
-                }
 
-                // Collect combining characters
-                while (charIndex < cellRun.chars.size && isCombiningCharacter(cellRun.chars[charIndex])) {
-                    if (combiningChars == null) {
-                        combiningChars = mutableListOf()
+                    val extraChars = combiningChars ?: TerminalLine.EMPTY_COMBINING_CHARS
+                    val width = if (extraChars.isNotEmpty() && extraChars[0].isLowSurrogate()) {
+                        val codepoint = Character.toCodePoint(char, extraChars[0])
+                        if (isFullwidthCodepoint(codepoint)) 2 else 1
+                    } else {
+                        if (isFullwidthCharacter(char)) 2 else 1
                     }
-                    combiningChars.add(cellRun.chars[charIndex])
-                    charIndex++
-                }
 
-                // Determine cell width
-                val extraChars = combiningChars ?: TerminalLine.EMPTY_COMBINING_CHARS
-                val width = if (extraChars.isNotEmpty() && extraChars[0].isLowSurrogate()) {
-                    val codepoint = Character.toCodePoint(char, extraChars[0])
-                    if (isFullwidthCodepoint(codepoint)) 2 else 1
-                } else {
-                    if (isFullwidthCharacter(char)) 2 else 1
-                }
+                    cells.add(
+                        TerminalLine.Cell(
+                            char = char,
+                            combiningChars = extraChars,
+                            fgColor = fgColor,
+                            bgColor = bgColor,
+                            bold = cellRun.bold,
+                            italic = cellRun.italic,
+                            underline = cellRun.underline,
+                            blink = cellRun.blink,
+                            reverse = cellRun.reverse,
+                            strike = cellRun.strike,
+                            width = width,
+                            imageId = cellRun.imageId.toLong(),
+                            placementId = cellRun.placementId.toLong(),
+                        ),
+                    )
 
-                cells.add(
-                    TerminalLine.Cell(
-                        char = char,
-                        combiningChars = extraChars,
-                        fgColor = fgColor,
-                        bgColor = bgColor,
-                        bold = cellRun.bold,
-                        italic = cellRun.italic,
-                        underline = cellRun.underline,
-                        blink = cellRun.blink,
-                        reverse = cellRun.reverse,
-                        strike = cellRun.strike,
-                        width = width,
-                        // #583: placeholder runs are isolated, so the run-level ids
-                        // belong to this single cell.
-                        imageId = cellRun.imageId.toLong(),
-                        placementId = cellRun.placementId.toLong(),
-                    ),
-                )
-
-                cellsInRun++
-                if (width == 2) {
                     cellsInRun++
+                    if (width == 2) {
+                        cellsInRun++
+                    }
                 }
             }
 
