@@ -351,7 +351,9 @@ void vterm_set_size(VTerm *vt, int rows, int cols);
 int  vterm_get_utf8(const VTerm *vt);
 void vterm_set_utf8(VTerm *vt, int is_utf8);
 void vterm_set_ambiwidth(int enabled);
+void vterm_set_ambiwidth_vt(VTerm *vt, int enabled);
 void vterm_set_custom_wide_chars(const uint32_t *chars, int count);
+void vterm_set_custom_wide_chars_vt(VTerm *vt, const uint32_t *chars, int count);
 
 size_t vterm_input_write(VTerm *vt, const char *bytes, size_t len);
 

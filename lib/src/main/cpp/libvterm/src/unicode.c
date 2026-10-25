@@ -292,11 +292,21 @@ static int g_ambiwidth = 0;
 static uint32_t *g_custom_wide_chars = NULL;
 static int g_custom_wide_count = 0;
 
-INTERNAL void vterm_set_ambiwidth(int enabled)
+void vterm_set_ambiwidth(int enabled)
 {
   pthread_mutex_lock(&g_unicode_lock);
   g_ambiwidth = enabled;
   pthread_mutex_unlock(&g_unicode_lock);
+}
+
+void vterm_set_ambiwidth_vt(VTerm *vt, int enabled)
+{
+  if (!vt) {
+    vterm_set_ambiwidth(enabled);
+    return;
+  }
+  vt->mode.ambiwidth = enabled ? 1 : 0;
+  vt->mode.ambiwidth_configured = 1;
 }
 
 void vterm_set_custom_wide_chars(const uint32_t *chars, int count)
@@ -317,6 +327,61 @@ void vterm_set_custom_wide_chars(const uint32_t *chars, int count)
   pthread_mutex_unlock(&g_unicode_lock);
 }
 
+void vterm_set_custom_wide_chars_vt(VTerm *vt, const uint32_t *chars, int count)
+{
+  if (!vt) {
+    vterm_set_custom_wide_chars(chars, count);
+    return;
+  }
+  vt->mode.ambiwidth_configured = 1;
+  if (vt->custom_wide_chars) {
+    vterm_allocator_free(vt, vt->custom_wide_chars);
+    vt->custom_wide_chars = NULL;
+    vt->custom_wide_count = 0;
+  }
+  if (chars && count > 0) {
+    vt->custom_wide_chars = (uint32_t *)vterm_allocator_malloc(vt, count * sizeof(uint32_t));
+    if (vt->custom_wide_chars) {
+      memcpy(vt->custom_wide_chars, chars, count * sizeof(uint32_t));
+      vt->custom_wide_count = count;
+    }
+  }
+}
+
+static int unicode_width_for_config(uint32_t codepoint, int ambiwidth,
+                                    const uint32_t *custom_wide_chars, int custom_wide_count)
+{
+  if (custom_wide_chars && custom_wide_count > 0) {
+    int low = 0, high = custom_wide_count - 1;
+    while (low <= high) {
+      int mid = low + (high - low) / 2;
+      if (custom_wide_chars[mid] == codepoint)
+        return 2;
+      if (custom_wide_chars[mid] < codepoint)
+        low = mid + 1;
+      else
+        high = mid - 1;
+    }
+
+    // Unprofiled ambiguous codepoints (e.g. Private Use Area) fall back to ambiwidth:
+    // AUTO_WIDE (ambiwidth == 1) -> 2 cells; AUTO_NARROW (ambiwidth == 0) -> 1 cell.
+    if ((codepoint >= 0xE000 && codepoint <= 0xF8FF) ||
+        (codepoint >= 0xF0000 && codepoint <= 0x10FFFD)) {
+      if (ambiwidth)
+        return 2;
+      return mk_wcwidth(codepoint);
+    }
+
+    // All profiled ambiguous characters not in custom_wide_chars measured narrow.
+    return mk_wcwidth(codepoint);
+  }
+
+  if (ambiwidth)
+    return mk_wcwidth_cjk(codepoint);
+
+  return mk_wcwidth(codepoint);
+}
+
 INTERNAL int vterm_unicode_width(uint32_t codepoint)
 {
   if(codepoint == 0x10eeee)
@@ -326,40 +391,24 @@ INTERNAL int vterm_unicode_width(uint32_t codepoint)
     return 2;
 
   pthread_mutex_lock(&g_unicode_lock);
-  const int ambiwidth = g_ambiwidth;
-  if (g_custom_wide_chars && g_custom_wide_count > 0) {
-    int low = 0, high = g_custom_wide_count - 1;
-    while (low <= high) {
-      int mid = low + (high - low) / 2;
-      if (g_custom_wide_chars[mid] == codepoint) {
-        pthread_mutex_unlock(&g_unicode_lock);
-        return 2;
-      }
-      if (g_custom_wide_chars[mid] < codepoint)
-        low = mid + 1;
-      else
-        high = mid - 1;
-    }
-    pthread_mutex_unlock(&g_unicode_lock);
-
-    // Unprofiled ambiguous codepoints (e.g. Private Use Area) fall back to g_ambiwidth:
-    // AUTO_WIDE (g_ambiwidth == 1) -> 2 cells; AUTO_NARROW (g_ambiwidth == 0) -> 1 cell.
-    if ((codepoint >= 0xE000 && codepoint <= 0xF8FF) ||
-        (codepoint >= 0xF0000 && codepoint <= 0x10FFFD)) {
-      if (ambiwidth)
-        return 2;
-      return mk_wcwidth(codepoint);
-    }
-
-    // All profiled ambiguous characters not in g_custom_wide_chars measured narrow.
-    return mk_wcwidth(codepoint);
-  }
+  int width = unicode_width_for_config(codepoint, g_ambiwidth, g_custom_wide_chars, g_custom_wide_count);
   pthread_mutex_unlock(&g_unicode_lock);
+  return width;
+}
 
-  if(ambiwidth)
-    return mk_wcwidth_cjk(codepoint);
+INTERNAL int vterm_unicode_width_vt(const VTerm *vt, uint32_t codepoint)
+{
+  if (!vt || !vt->mode.ambiwidth_configured)
+    return vterm_unicode_width(codepoint);
 
-  return mk_wcwidth(codepoint);
+  if (codepoint == 0x10eeee)
+    return 1;
+
+  if (bisearch(codepoint, fullwidth, sizeof(fullwidth) / sizeof(fullwidth[0]) - 1))
+    return 2;
+
+  return unicode_width_for_config(codepoint, vt->mode.ambiwidth,
+                                  vt->custom_wide_chars, vt->custom_wide_count);
 }
 
 INTERNAL int vterm_unicode_is_combining(uint32_t codepoint)

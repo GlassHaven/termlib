@@ -211,6 +211,7 @@ Terminal::Terminal(JNIEnv* env, jobject callbacks, int rows, int cols, bool enab
     }
 
     vterm_set_utf8(mVt, 1);
+    vterm_set_ambiwidth_vt(mVt, 0);
 
     // Set up output handler for keyboard input
     vterm_output_set_callback(mVt, termOutput, this);
@@ -417,13 +418,17 @@ int Terminal::setBoldHighbright(int enabled) {
 
 int Terminal::setAmbiwidth(int enabled) {
     std::scoped_lock lock(mLock);
-    vterm_set_ambiwidth(enabled);
+    if (mVt) {
+        vterm_set_ambiwidth_vt(mVt, enabled);
+    }
     return 0;
 }
 
 int Terminal::setCustomWideChars(const uint32_t* chars, int count) {
     std::scoped_lock lock(mLock);
-    vterm_set_custom_wide_chars(chars, count);
+    if (mVt) {
+        vterm_set_custom_wide_chars_vt(mVt, chars, count);
+    }
     return 0;
 }
 
@@ -1702,7 +1707,7 @@ Java_org_connectbot_terminal_TerminalNative_nativeDestroy(JNIEnv* /* env */, job
 JNIEXPORT jint JNICALL
 Java_org_connectbot_terminal_TerminalNative_nativeWriteInputBuffer(JNIEnv* env, jobject /* thiz */,
                                                                    jlong ptr, jobject callbacks,
-                                                                   jobject buffer, jint length) {
+                                                                   jobject buffer, jint offset, jint length) {
     auto* term = reinterpret_cast<Terminal*>(ptr);
     Terminal::CallbackScope scope(*term, env, callbacks);
     const auto* data = static_cast<const uint8_t*>(
@@ -1710,7 +1715,13 @@ Java_org_connectbot_terminal_TerminalNative_nativeWriteInputBuffer(JNIEnv* env, 
     if (!data) {
         return 0;
     }
-    return term->writeInput(data, length);
+    const jlong capacity = env->GetDirectBufferCapacity(buffer);
+    if (offset < 0 || length < 0 || capacity < 0 ||
+        static_cast<jlong>(offset) > capacity ||
+        static_cast<jlong>(length) > capacity - static_cast<jlong>(offset)) {
+        return 0;
+    }
+    return term->writeInput(data + offset, length);
 }
 
 JNIEXPORT jint JNICALL

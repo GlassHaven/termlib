@@ -113,7 +113,21 @@ internal class TerminalNative(
      * @param length Number of bytes to read
      * @return Number of bytes consumed
      */
-    fun writeInput(buffer: ByteBuffer, length: Int): Int = withPtr { nativeWriteInputBuffer(it, checkNotNull(callbacks), buffer, length) }
+    fun writeInput(buffer: ByteBuffer, length: Int): Int = withPtr { ptr ->
+        val cbs = checkNotNull(callbacks)
+        val pos = buffer.position()
+        if (length <= 0 || pos < 0 || length > buffer.remaining()) {
+            0
+        } else if (buffer.isDirect) {
+            nativeWriteInputBuffer(ptr, cbs, buffer, pos, length)
+        } else if (buffer.hasArray()) {
+            nativeWriteInputArray(ptr, cbs, buffer.array(), buffer.arrayOffset() + pos, length)
+        } else {
+            val copy = ByteArray(length)
+            buffer.duplicate().get(copy, 0, length)
+            nativeWriteInputArray(ptr, cbs, copy, 0, length)
+        }
+    }
 
     /**
      * Feed input data from PTY to the terminal emulator.
@@ -177,8 +191,7 @@ internal class TerminalNative(
      * - bit 29 ([ROW_RUNS_THIS_CONT_BIT]): true if `row` itself has continuation=1
      * - bit 30 ([ROW_RUNS_NEXT_CONT_BIT]): true if `row + 1` has continuation=1 (`softWrapped`)
      */
-    fun getRowRuns(row: Int, runs: Array<CellRun>): Int =
-        withPtr { nativeGetRowRuns(it, checkNotNull(callbacks), row, runs) }
+    fun getRowRuns(row: Int, runs: Array<CellRun>): Int = withPtr { nativeGetRowRuns(it, checkNotNull(callbacks), row, runs) }
 
     /**
      * Set ANSI palette colors (indices 0-15).
@@ -285,7 +298,7 @@ internal class TerminalNative(
     // The callback-reaching entry points take [callbacks] explicitly: the JNI
     // argument is what keeps the object alive for the duration of the native
     // call, replacing the global reference the native side used to store.
-    private external fun nativeWriteInputBuffer(ptr: Long, callbacks: TerminalCallbacks, buffer: ByteBuffer, length: Int): Int
+    private external fun nativeWriteInputBuffer(ptr: Long, callbacks: TerminalCallbacks, buffer: ByteBuffer, offset: Int, length: Int): Int
     private external fun nativeWriteInputArray(ptr: Long, callbacks: TerminalCallbacks, data: ByteArray, offset: Int, length: Int): Int
     private external fun nativeResize(ptr: Long, callbacks: TerminalCallbacks, rows: Int, cols: Int): Int
     private external fun nativeDispatchKey(ptr: Long, callbacks: TerminalCallbacks, modifiers: Int, key: Int): Boolean

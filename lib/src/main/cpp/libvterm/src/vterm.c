@@ -91,6 +91,8 @@ void vterm_free(VTerm *vt)
 
   vterm_allocator_free(vt, vt->outbuffer);
   vterm_allocator_free(vt, vt->tmpbuffer);
+  if(vt->custom_wide_chars)
+    vterm_allocator_free(vt, vt->custom_wide_chars);
 
   vterm_allocator_free(vt, vt);
 }

@@ -42,8 +42,13 @@ static void decode_utf8(VTermEncoding *enc, void *data_,
     printf(" pos=%zd c=%02x rem=%d\n", *pos, c, data->bytes_remaining);
 #endif
 
-    if(c < 0x20) // C0
+    if(c < 0x20) { // C0
+      if(data->bytes_remaining) {
+        cp[(*cpi)++] = UNICODE_INVALID;
+        data->bytes_remaining = 0;
+      }
       return;
+    }
 
     else if(c >= 0x20 && c < 0x7f) {
       if(data->bytes_remaining)
@@ -56,8 +61,13 @@ static void decode_utf8(VTermEncoding *enc, void *data_,
       data->bytes_remaining = 0;
     }
 
-    else if(c == 0x7f) // DEL
+    else if(c == 0x7f) { // DEL
+      if(data->bytes_remaining) {
+        cp[(*cpi)++] = UNICODE_INVALID;
+        data->bytes_remaining = 0;
+      }
       return;
+    }
 
     else if(c >= 0x80 && c < 0xc0) {
       if(!data->bytes_remaining) {

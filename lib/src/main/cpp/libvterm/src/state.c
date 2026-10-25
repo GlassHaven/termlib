@@ -334,6 +334,12 @@ static void set_lineinfo(VTermState *state, int row, int force, int dwl, int dhl
     state->lineinfo[row] = info;
 }
 
+static void reset_utf8_state(VTermState *state)
+{
+  if(state->encoding_utf8.enc && state->encoding_utf8.enc->init)
+    (*state->encoding_utf8.enc->init)(state->encoding_utf8.enc, state->encoding_utf8.data);
+}
+
 static int on_text(const char bytes[], size_t len, void *user)
 {
   VTermState *state = user;
@@ -351,6 +357,9 @@ static int on_text(const char bytes[], size_t len, void *user)
     !(bytes[eaten] & 0x80) ? &state->encoding[state->gl_set] :
     state->vt->mode.utf8   ? &state->encoding_utf8 :
                              &state->encoding[state->gr_set];
+
+  if(encoding->enc == state->encoding_utf8.enc)
+    encoding = &state->encoding_utf8;
 
   (*encoding->enc->decode)(encoding->enc, encoding->data,
       codepoints, &npoints, state->gsingle_set ? 1 : maxpoints,
@@ -425,7 +434,7 @@ static int on_text(const char bytes[], size_t len, void *user)
 
     for( ; i < glyph_ends; i++) {
       chars[i - glyph_starts] = codepoints[i];
-      int this_width = vterm_unicode_width(codepoints[i]);
+      int this_width = vterm_unicode_width_vt(state->vt, codepoints[i]);
 #ifdef DEBUG
       if(this_width < 0) {
         fprintf(stderr, "Text with negative-width codepoint U+%04x\n", codepoints[i]);
@@ -517,6 +526,7 @@ static int on_text(const char bytes[], size_t len, void *user)
 static int on_control(unsigned char control, void *user)
 {
   VTermState *state = user;
+  reset_utf8_state(state);
 
   VTermPos oldpos = state->pos;
 
@@ -670,6 +680,7 @@ static void savecursor(VTermState *state, int save)
 static int on_escape(const char *bytes, size_t len, void *user)
 {
   VTermState *state = user;
+  reset_utf8_state(state);
 
   /* Easier to decode this from the first byte, even though the final
    * byte terminates it
@@ -1025,6 +1036,7 @@ void vterm_state_set_xtversion(VTermState *state, const char *identity)
 static int on_csi(const char *leader, const long args[], int argcount, const char *intermed, char command, void *user)
 {
   VTermState *state = user;
+  reset_utf8_state(state);
   int leader_byte = 0;
   int intermed_byte = 0;
   int cancel_phantom = 1;
@@ -1885,6 +1897,8 @@ static void osc_selection(VTermState *state, VTermStringFragment frag)
 static int on_osc(int command, VTermStringFragment frag, void *user)
 {
   VTermState *state = user;
+  if(frag.initial)
+    reset_utf8_state(state);
 
   switch(command) {
     case 0:
@@ -2005,6 +2019,8 @@ static void request_status_string(VTermState *state, VTermStringFragment frag)
 static int on_dcs(const char *command, size_t commandlen, VTermStringFragment frag, void *user)
 {
   VTermState *state = user;
+  if(frag.initial)
+    reset_utf8_state(state);
 
   if(commandlen == 2 && strneq(command, "$q", 2)) {
     request_status_string(state, frag);
@@ -2021,6 +2037,8 @@ static int on_dcs(const char *command, size_t commandlen, VTermStringFragment fr
 static int on_apc(VTermStringFragment frag, void *user)
 {
   VTermState *state = user;
+  if(frag.initial)
+    reset_utf8_state(state);
 
   if(state->fallbacks && state->fallbacks->apc)
     if((*state->fallbacks->apc)(frag, state->fbdata))
@@ -2033,6 +2051,8 @@ static int on_apc(VTermStringFragment frag, void *user)
 static int on_pm(VTermStringFragment frag, void *user)
 {
   VTermState *state = user;
+  if(frag.initial)
+    reset_utf8_state(state);
 
   if(state->fallbacks && state->fallbacks->pm)
     if((*state->fallbacks->pm)(frag, state->fbdata))
@@ -2045,6 +2065,8 @@ static int on_pm(VTermStringFragment frag, void *user)
 static int on_sos(VTermStringFragment frag, void *user)
 {
   VTermState *state = user;
+  if(frag.initial)
+    reset_utf8_state(state);
 
   if(state->fallbacks && state->fallbacks->sos)
     if((*state->fallbacks->sos)(frag, state->fbdata))
@@ -2154,6 +2176,7 @@ static int on_resize(int rows, int cols, void *user)
 static void on_cancel(void *user)
 {
   VTermState *state = user;
+  reset_utf8_state(state);
   if(state->fallbacks && state->fallbacks->control)
     state->fallbacks->control(0x18, state->fbdata);
 }

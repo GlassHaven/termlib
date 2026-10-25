@@ -193,7 +193,12 @@ struct VTerm
   struct {
     unsigned int utf8:1;
     unsigned int ctrl8bit:1;
+    unsigned int ambiwidth:1;
+    unsigned int ambiwidth_configured:1;
   } mode;
+
+  uint32_t *custom_wide_chars;
+  int custom_wide_count;
 
   struct {
     enum VTermParserState {
@@ -301,6 +306,7 @@ void vterm_screen_free(VTermScreen *screen);
 VTermEncoding *vterm_lookup_encoding(VTermEncodingType type, char designation);
 
 int vterm_unicode_width(uint32_t codepoint);
+int vterm_unicode_width_vt(const VTerm *vt, uint32_t codepoint);
 int vterm_unicode_is_combining(uint32_t codepoint);
 
 #endif
