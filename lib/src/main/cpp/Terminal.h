@@ -107,7 +107,7 @@ private:
     static int termMovecursor(VTermPos pos, VTermPos oldpos, int visible, void* user);
     static int termSettermprop(VTermProp prop, VTermValue* val, void* user);
     static int termBell(void* user);
-    static int termSbPushline(int cols, const VTermScreenCell* cells, void* user);
+    static int termSbPushline(int cols, const VTermScreenCell* cells, bool softWrapped, void* user);
     static int termSbPopline(int cols, VTermScreenCell* cells, void* user);
     static int termSbClear(void* user);
 

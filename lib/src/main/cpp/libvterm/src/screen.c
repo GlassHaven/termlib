@@ -240,25 +240,33 @@ static int putglyph(VTermGlyphInfo *info, VTermPos pos, void *user)
   return 1;
 }
 
-static void sb_pushline_from_row(VTermScreen *screen, int row)
+static void sb_pushline_from_row(VTermScreen *screen, int row, bool soft_wrapped)
 {
   VTermPos pos = { .row = row };
   for(pos.col = 0; pos.col < screen->cols; pos.col++)
     vterm_screen_get_cell(screen, pos, screen->sb_buffer + pos.col);
 
-  (screen->callbacks->sb_pushline)(screen->cols, screen->sb_buffer, screen->cbdata);
+  if(screen->callbacks->sb_pushline_sr)
+    (screen->callbacks->sb_pushline_sr)(screen->cols, screen->sb_buffer, soft_wrapped, screen->cbdata);
+  else
+    (screen->callbacks->sb_pushline)(screen->cols, screen->sb_buffer, screen->cbdata);
 }
 
 static int moverect_internal(VTermRect dest, VTermRect src, void *user)
 {
   VTermScreen *screen = user;
 
-  if(screen->callbacks && screen->callbacks->sb_pushline &&
+  if(screen->callbacks && (screen->callbacks->sb_pushline_sr || screen->callbacks->sb_pushline) &&
      dest.start_row == 0 && dest.start_col == 0 &&        // starts top-left corner
      dest.end_col == screen->cols &&                      // full width
      screen->buffer == screen->buffers[BUFIDX_PRIMARY]) { // not altscreen
-    for(int row = 0; row < src.start_row; row++)
-      sb_pushline_from_row(screen, row);
+    for(int row = 0; row < src.start_row; row++) {
+      bool soft_wrapped = (screen->state && screen->state->pushed_softwrap &&
+                           row < screen->state->pushed_softwrap_count)
+        ? (screen->state->pushed_softwrap[row] != 0)
+        : false;
+      sb_pushline_from_row(screen, row, soft_wrapped);
+    }
   }
 
   int cols = src.end_col - src.start_col;
@@ -797,9 +805,11 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
 
   if(old_row >= 0 && bufidx == BUFIDX_PRIMARY) {
     /* Push spare lines to scrollback buffer */
-    if(screen->callbacks && screen->callbacks->sb_pushline)
-      for(int row = 0; row <= old_row; row++)
-        sb_pushline_from_row(screen, row);
+    if(screen->callbacks && (screen->callbacks->sb_pushline_sr || screen->callbacks->sb_pushline))
+      for(int row = 0; row <= old_row; row++) {
+        bool soft_wrapped = old_lineinfo && (row + 1) < old_rows && old_lineinfo[row + 1].continuation != 0;
+        sb_pushline_from_row(screen, row, soft_wrapped);
+      }
     if(active)
       statefields->pos.row -= (old_row + 1);
   }

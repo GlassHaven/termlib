@@ -90,6 +90,10 @@ struct VTermState
 
   /* lineinfo will == lineinfos[0] or lineinfos[1], depending on altscreen */
   VTermLineInfo *lineinfo;
+
+  /* Pre-shift soft-wrap flags for top-anchored rows pushed during scroll() */
+  const unsigned char *pushed_softwrap;
+  int pushed_softwrap_count;
 #define ROWWIDTH(state,row) ((state)->lineinfo[(row)].doublewidth ? ((state)->cols / 2) : (state)->cols)
 #define THISROWWIDTH(state) ROWWIDTH(state, (state)->pos.row)
 

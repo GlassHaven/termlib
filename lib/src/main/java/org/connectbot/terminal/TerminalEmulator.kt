@@ -1461,13 +1461,23 @@ internal class TerminalEmulatorImpl(
 
         if (!needsUpdate) return
 
-        // Update damaged lines (safe to call getCellRun now - not in callback)
+        // Update damaged lines (safe to call getRowRuns now - not in callback)
+        val rebuiltRows = BooleanArray(rows.coerceAtLeast(0))
         for (region in damageRegions) {
+            if (rows <= 0) break
             // Ensure row is within bounds [0, rows)
             val startRow = region.startRow.coerceIn(0, rows - 1)
             val endRow = region.endRow.coerceIn(startRow, rows) // endRow is exclusive
             for (row in startRow until endRow) {
-                updateLine(row, region, preserveMovedSegments = row in movedRows)
+                updateLine(
+                    row = row,
+                    damageRegion = region,
+                    preserveMovedSegments = row in movedRows,
+                    rebuiltRowsInBatch = rebuiltRows,
+                )
+                if (row in rebuiltRows.indices) {
+                    rebuiltRows[row] = true
+                }
             }
         }
 
@@ -1534,7 +1544,12 @@ internal class TerminalEmulatorImpl(
     /**
      * Update a single line by fetching cell data from the terminal.
      */
-    private fun updateLine(row: Int, damageRegion: DamageRegion, preserveMovedSegments: Boolean) {
+    private fun updateLine(
+        row: Int,
+        damageRegion: DamageRegion,
+        preserveMovedSegments: Boolean,
+        rebuiltRowsInBatch: BooleanArray? = null,
+    ) {
         // Safety check: ensure row is within bounds
         if (row !in 0..<rows) {
             return
@@ -1562,7 +1577,10 @@ internal class TerminalEmulatorImpl(
         // write is either fully before the fetch (its damage was drained
         // with this batch) or fully after (its damage re-damages and
         // rebuilds this row again). The row is never a mix of two states.
-        val fetchedRuns = terminalNative.getRowRuns(row, ensureRowRunPool(cols))
+        val packedRuns = terminalNative.getRowRuns(row, ensureRowRunPool(cols))
+        val fetchedRuns = packedRuns and TerminalNative.ROW_RUNS_COUNT_MASK
+        val thisRowContinuation = (packedRuns and TerminalNative.ROW_RUNS_THIS_CONT_BIT) != 0
+        val softWrapped = (packedRuns and TerminalNative.ROW_RUNS_NEXT_CONT_BIT) != 0
         // #749 test seam: fires after the atomic row fetch. A write
         // injected here lands entirely outside the fetch - the exact
         // interleaving that used to stitch the row when the fetch was
@@ -1700,15 +1718,6 @@ internal class TerminalEmulatorImpl(
             col++
         }
 
-        // Check if this line is soft-wrapped (the next line is a continuation).
-        // A line is soft-wrapped if the next row has continuation=true.
-        val softWrapped = if (row + 1 < rows) {
-            terminalNative.getLineContinuation(row + 1)
-        } else {
-            // Last visible row - we can't know if it's wrapped until it scrolls
-            false
-        }
-
         // Update cached line, preserving existing semantic segments only when they
         // were not touched by terminal text damage. This prevents stale OSC 8
         // links from surviving line redraws while allowing display-only
@@ -1731,6 +1740,12 @@ internal class TerminalEmulatorImpl(
                 }
                 replaceStoredSegmentTexts(row, preservedSegments)
                 this[row] = TerminalLine(row, cells, softWrapped = softWrapped, semanticSegments = preservedSegments)
+                if (row > 0 && row - 1 < size && (rebuiltRowsInBatch == null || row - 1 !in rebuiltRowsInBatch.indices || !rebuiltRowsInBatch[row - 1])) {
+                    val prevRowLine = this[row - 1]
+                    if (prevRowLine.softWrapped != thisRowContinuation) {
+                        this[row - 1] = prevRowLine.copy(softWrapped = thisRowContinuation)
+                    }
+                }
             }
         }
     }
