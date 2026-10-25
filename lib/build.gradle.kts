@@ -127,6 +127,8 @@ android {
         // Shared lifetime checks run both under Robolectric and on-device.
         getByName("test").kotlin.directories.add("src/sharedTest/java")
         getByName("androidTest").kotlin.directories.add("src/sharedTest/java")
+        // AndroidFontFallbackTest reads Primary.ttf/Fallback.ttf from the test APK assets.
+        getByName("androidTest").assets.directories.add("src/test/resources/glyph-fixtures")
     }
 
     testOptions {
