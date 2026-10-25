@@ -68,8 +68,20 @@ class TerminalImeLifecycleTest {
         activity.setContentView(ComposeView(activity).apply { setContent(content) })
     }
 
+    /**
+     * The fork's IME contract, device-verified: BACK dismisses the keyboard at
+     * the platform level, but onImeVisibilityChanged reports host intent
+     * (keyboardEnabled && showSoftKeyboard), not platform truth — so the report
+     * stays true across a BACK dismissal, and only the host's
+     * showSoftKeyboard=false opt-out reports false. Reopening is the tap's
+     * job: requestFocus() alone is a no-op after a BACK dismissal because the
+     * input view never lost focus, so the tap handler must call showIme()
+     * explicitly while the host still wants the keyboard (the fold merge kept
+     * the fork's tap implementation and dropped upstream's showIme() call —
+     * this test is what caught it). A tap after opt-out must not reopen.
+     */
     @Test
-    fun backThenTapReopensKeyboardWithoutChangingEditors() {
+    fun backDismissesTapReopensAndHostOptOutHidesIt() {
         val terminal = TerminalEmulatorFactory.create()
         val enabled = mutableStateOf(true)
         var reportedVisibility: Boolean? = null
@@ -89,12 +101,16 @@ class TerminalImeLifecycleTest {
         waitUntil("Keyboard did not open on entry") { imeVisible() && reportedVisibility == true }
         settleLayout()
         instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
-        waitUntil("Back did not dismiss the keyboard") { !imeVisible() && reportedVisibility == false }
+        waitUntil("Back did not dismiss the keyboard") { !imeVisible() }
+        instrumentation.runOnMainSync {
+            assertTrue("A platform dismissal must not change the host-intent report", reportedVisibility == true)
+        }
         terminal.writeInput("still connected\r\n".toByteArray())
         settleLayout()
         instrumentation.runOnMainSync { assertFalse(imeVisible()) }
         tapTerminal()
-        waitUntil("Tapping the focused terminal did not reopen the keyboard") { imeVisible() && reportedVisibility == true }
+        waitUntil("Tapping the focused terminal did not reopen the keyboard") { imeVisible() }
+        instrumentation.runOnMainSync { assertTrue(reportedVisibility == true) }
         instrumentation.runOnMainSync { enabled.value = false }
         waitUntil("Host opt-out did not hide the keyboard") { !imeVisible() && reportedVisibility == false }
         settleLayout()

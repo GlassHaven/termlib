@@ -822,6 +822,13 @@ internal fun TerminalWithAccessibility(
     // 1. keyboardEnabled is true (master switch)
     // 2. showSoftKeyboard is true (user wants IME visible)
     val shouldShowIme = keyboardEnabled && showSoftKeyboard
+    // The tap handler lives in a long-lived pointerInput lambda that does not
+    // restart on these flipping, so it must read them live rather than capture
+    // a stale Boolean (#435, same reason as currentMouseModeActive). The tap
+    // needs both: focus alone is a no-op once the view already holds focus,
+    // so reopening a BACK-dismissed keyboard requires an explicit showIme().
+    val currentKeyboardEnabled by rememberUpdatedState(keyboardEnabled)
+    val currentShouldShowIme by rememberUpdatedState(shouldShowIme)
 
     // Keep reference to ImeInputView for controlling IME
     var imeInputView by remember { mutableStateOf<ImeInputView?>(null) }
@@ -2937,8 +2944,14 @@ internal fun TerminalWithAccessibility(
                                                 )
 
                                             if (!callbackHandled) {
-                                                if (keyboardEnabled) {
+                                                if (currentKeyboardEnabled) {
                                                     focusRequester.requestFocus()
+                                                    // Focus alone does not reopen a keyboard the
+                                                    // platform dismissed (BACK): the view never
+                                                    // lost focus, so requestFocus() is a no-op.
+                                                    // Show explicitly when the host still wants
+                                                    // the keyboard up.
+                                                    if (currentShouldShowIme) imeInputView?.showIme()
                                                 }
                                                 if (!tapPositionedCursor) {
                                                     val now = System.currentTimeMillis()
