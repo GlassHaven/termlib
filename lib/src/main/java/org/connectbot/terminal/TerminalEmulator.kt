@@ -718,8 +718,17 @@ internal class TerminalEmulatorImpl(
     private var scrollbackSnapshot: List<TerminalLine> = emptyList()
     private var scrollbackDirty = false
 
-    // Reusable CellRun for fetching cell data
-    private val cellRun = CellRun()
+    // Reusable CellRun pool for fetching a whole row's runs in one native
+    // call (#749). Grown to the widest row seen; only ever touched from the
+    // processPendingUpdates thread.
+    private val rowRunPool = ArrayList<CellRun>()
+
+    private fun ensureRowRunPool(cols: Int): Array<CellRun> {
+        while (rowRunPool.size < cols) {
+            rowRunPool.add(CellRun())
+        }
+        return rowRunPool.toTypedArray()
+    }
 
     // Current screen lines cache
     private var currentLines = List(initialRows) { row ->
@@ -1540,31 +1549,31 @@ internal class TerminalEmulatorImpl(
         }
 
         val cells = ArrayList<TerminalLine.Cell>(cols)
+
+        // #749: fetch the whole row in ONE native call. The previous loop
+        // called getCellRun() once per style run, each call taking and
+        // releasing the native lock independently, so a writeInput() from
+        // the SSH reader thread could land between two runs of the same
+        // rebuild and splice pre- and post-write cells into one cached row
+        // (merged words, transposed chars, eaten leading spaces - permanent,
+        // because the damage bookkeeping for the later write only re-damages
+        // the rows IT touched, not the row that was stitched). getRowRuns()
+        // reads the entire row under a single lock hold, so a concurrent
+        // write is either fully before the fetch (its damage was drained
+        // with this batch) or fully after (its damage re-damages and
+        // rebuilds this row again). The row is never a mix of two states.
+        val fetchedRuns = terminalNative.getRowRuns(row, ensureRowRunPool(cols))
+        // #749 test seam: fires after the atomic row fetch. A write
+        // injected here lands entirely outside the fetch - the exact
+        // interleaving that used to stitch the row when the fetch was
+        // per-run. ScrollStitchRaceTest asserts the cached row is still a
+        // single consistent native state.
+        onCellRunFetchedForTesting?.invoke()
+
         var col = 0
-
-        while (col < cols) {
-            cellRun.reset()
-            val runLength = terminalNative.getCellRun(row, col, cellRun)
-            // #749 test seam: fires between getCellRun calls, i.e. exactly where
-            // a concurrent writeInput() can land on a real device (each getCellRun
-            // takes and releases the native lock independently). Tests inject a
-            // write here to prove the row rebuild stitches two native states.
-            onCellRunFetchedForTesting?.invoke()
-
-            if (runLength <= 0) {
-                // Fill remaining with empty cells
-                while (col < cols) {
-                    cells.add(
-                        TerminalLine.Cell(
-                            char = ' ',
-                            fgColor = currentDefaultFg,
-                            bgColor = currentDefaultBg,
-                        ),
-                    )
-                    col++
-                }
-                break
-            }
+        for (i in 0 until fetchedRuns) {
+            val cellRun = rowRunPool[i]
+            val runLength = cellRun.runLength
 
             // Convert CellRun colors to Compose Color
             val fgColor = Color(cellRun.fgRed, cellRun.fgGreen, cellRun.fgBlue)
@@ -1635,6 +1644,20 @@ internal class TerminalEmulatorImpl(
             }
 
             col += cellsInRun
+        }
+
+        // A run shorter than the row means the native fetch stopped early
+        // (defensive: it should always cover the full row). Fill the tail
+        // with blanks so the cached line is always exactly `cols` wide.
+        while (col < cols) {
+            cells.add(
+                TerminalLine.Cell(
+                    char = ' ',
+                    fgColor = currentDefaultFg,
+                    bgColor = currentDefaultBg,
+                ),
+            )
+            col++
         }
 
         // Check if this line is soft-wrapped (the next line is a continuation).

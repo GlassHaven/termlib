@@ -167,6 +167,17 @@ internal class TerminalNative(
     fun getCellRun(row: Int, col: Int, run: CellRun): Int = withPtr { nativeGetCellRun(it, checkNotNull(callbacks), row, col, run) }
 
     /**
+     * Fetch every style run of one row in a single native call (#749).
+     * The whole row is read under one lock hold, so a concurrent
+     * [writeInput] can never splice two terminal states into one rebuilt
+     * row. Fills [runs] from index 0 and returns the number filled; each
+     * run's [CellRun.runLength] is the screen-column count it covers (1 for
+     * an image placeholder), same semantics as [getCellRun].
+     */
+    fun getRowRuns(row: Int, runs: Array<CellRun>): Int =
+        withPtr { nativeGetRowRuns(it, checkNotNull(callbacks), row, runs) }
+
+    /**
      * Set ANSI palette colors (indices 0-15).
      *
      * This configures the 16 ANSI colors used by terminal escape sequences.
@@ -277,6 +288,7 @@ internal class TerminalNative(
     private external fun nativeDispatchKey(ptr: Long, callbacks: TerminalCallbacks, modifiers: Int, key: Int): Boolean
     private external fun nativeDispatchCharacter(ptr: Long, callbacks: TerminalCallbacks, modifiers: Int, character: Int): Boolean
     private external fun nativeGetCellRun(ptr: Long, callbacks: TerminalCallbacks, row: Int, col: Int, run: CellRun): Int
+    private external fun nativeGetRowRuns(ptr: Long, callbacks: TerminalCallbacks, row: Int, runs: Array<CellRun>): Int
     private external fun nativeSetPaletteColors(ptr: Long, callbacks: TerminalCallbacks, colors: IntArray, count: Int): Int
     private external fun nativeSetDefaultColors(ptr: Long, callbacks: TerminalCallbacks, fgColor: Int, bgColor: Int): Int
     private external fun nativeGetLineContinuation(ptr: Long, callbacks: TerminalCallbacks, row: Int): Boolean

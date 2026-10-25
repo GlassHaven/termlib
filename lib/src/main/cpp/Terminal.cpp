@@ -641,6 +641,164 @@ int Terminal::getCellRun(JNIEnv* env, int row, int col, jobject runObject) {
     return runLength;
 }
 
+// #749: fetch every style run of one row under a single lock hold.
+// getCellRun() locks per call, so a writeInput() from the SSH reader thread
+// can land between two runs of the same row rebuild; the Kotlin side then
+// splices pre- and post-write cells into one cached row while the native
+// model stays correct - permanent intra-row corruption (merged words,
+// transposed chars, eaten leading spaces). This is a pure read:
+// vterm_screen_get_cell fires no callbacks, so holding mLock across the
+// whole row cannot invert against the damage path (which only takes mLock
+// from writeInput/resize, whose callbacks never call back into native).
+int Terminal::getRowRuns(JNIEnv* env, int row, jobjectArray runObjects) {
+    std::scoped_lock lock(mLock);
+
+    const jsize maxRuns = runObjects ? env->GetArrayLength(runObjects) : 0;
+    if (!mVts || row < 0 || row >= mRows || maxRuns <= 0) {
+        return 0;
+    }
+
+    // One reusable char array per run slot, grown on demand. Safe to reuse
+    // across calls for the same reason as tls_charArray above: the Kotlin
+    // side consumes every run of a row before the next getRowRuns call.
+    static thread_local std::vector<jcharArray> tls_runArrays;
+    static thread_local std::vector<jsize> tls_runArraySizes;
+
+    int filledRuns = 0;
+    int col = 0;
+    while (col < mCols && filledRuns < maxRuns) {
+        VTermPos pos = { row, col };
+        VTermScreenCell cell;
+        vterm_screen_get_cell(mVts, pos, &cell);
+
+        const bool imageCell = cell.chars[0] == 0x10eeee;
+        jint imageId = 0;
+        jint placementId = 0;
+        if (imageCell) {
+            const VTermColor& color = cell.fg;
+            if (VTERM_COLOR_IS_DEFAULT_FG(&color)) {
+                imageId = 0;
+            } else if (VTERM_COLOR_IS_INDEXED(&color)) {
+                imageId = color.indexed.idx;
+            } else {
+                imageId = (color.rgb.red << 16) | (color.rgb.green << 8) | color.rgb.blue;
+            }
+            placementId = cell.chars[14];
+        }
+
+        // Pass 1: measure the run (UTF-16 units and screen columns).
+        int utf16Len = 0;
+        int runColumns = 0;
+        for (int c = col; c < mCols; c++) {
+            VTermPos currentPos = { row, c };
+            VTermScreenCell currentCell;
+            vterm_screen_get_cell(mVts, currentPos, &currentCell);
+            if (c > col && (!cellStyleEqual(cell, currentCell) ||
+                            imageCell != (currentCell.chars[0] == 0x10eeee))) {
+                break;
+            }
+            if (imageCell && c > col) {
+                break;
+            }
+            if (currentCell.chars[0] == 0) {
+                utf16Len += 1;  // empty cell renders as a space
+            } else {
+                for (int i = 0; i < VTERM_MAX_CHARS_PER_CELL && currentCell.chars[i]; i++) {
+                    utf16Len += currentCell.chars[i] > 0xFFFF ? 2 : 1;
+                }
+            }
+            runColumns += currentCell.width;
+            if (currentCell.width == 2) {
+                c++;
+            }
+        }
+        const int endCol = col + runColumns;
+
+        // Grow the slot's array if needed (headroom for the image sentinel).
+        const jsize needed = utf16Len + (imageCell ? 1 : 0);
+        if (static_cast<size_t>(filledRuns) >= tls_runArrays.size()) {
+            tls_runArrays.push_back(nullptr);
+            tls_runArraySizes.push_back(0);
+        }
+        if (tls_runArrays[filledRuns] == nullptr || tls_runArraySizes[filledRuns] < needed) {
+            if (tls_runArrays[filledRuns] != nullptr) {
+                env->DeleteGlobalRef(tls_runArrays[filledRuns]);
+            }
+            jsize newSize = ((needed + 63) / 64) * 64;
+            ScopedLocalRef<jcharArray> localArray(env, env->NewCharArray(newSize));
+            tls_runArrays[filledRuns] = (jcharArray)env->NewGlobalRef(localArray);
+            tls_runArraySizes[filledRuns] = newSize;
+        }
+
+        // Pass 2: fill the char array.
+        jchar* scratch = new jchar[needed > 0 ? needed : 1];
+        int w = 0;
+        for (int c = col; c < endCol; c++) {
+            VTermPos currentPos = { row, c };
+            VTermScreenCell currentCell;
+            vterm_screen_get_cell(mVts, currentPos, &currentCell);
+            if (currentCell.chars[0] == 0) {
+                scratch[w++] = ' ';
+            } else {
+                for (int i = 0; i < VTERM_MAX_CHARS_PER_CELL && currentCell.chars[i]; i++) {
+                    uint32_t codepoint = currentCell.chars[i];
+                    if (codepoint <= 0xFFFF) {
+                        scratch[w++] = (jchar)codepoint;
+                    } else {
+                        codepoint -= 0x10000;
+                        scratch[w++] = (jchar)(0xD800 + (codepoint >> 10));
+                        scratch[w++] = (jchar)(0xDC00 + (codepoint & 0x3FF));
+                    }
+                }
+            }
+            if (currentCell.width == 2) {
+                c++;
+            }
+        }
+        if (imageCell && w < needed) {
+            scratch[w] = 0;  // sentinel: stops Kotlin's combining walk at stale tail
+        }
+        env->SetCharArrayRegion(tls_runArrays[filledRuns], 0, needed, scratch);
+        delete[] scratch;
+
+        jobject runObject = env->GetObjectArrayElement(runObjects, filledRuns);
+
+        uint8_t fgRed, fgGreen, fgBlue;
+        uint8_t bgRed, bgGreen, bgBlue;
+        resolveColor(cell.fg, fgRed, fgGreen, fgBlue);
+        resolveColor(cell.bg, bgRed, bgGreen, bgBlue);
+
+        env->SetIntField(runObject, mFgRedField, fgRed);
+        env->SetIntField(runObject, mFgGreenField, fgGreen);
+        env->SetIntField(runObject, mFgBlueField, fgBlue);
+        env->SetIntField(runObject, mBgRedField, bgRed);
+        env->SetIntField(runObject, mBgGreenField, bgGreen);
+        env->SetIntField(runObject, mBgBlueField, bgBlue);
+        env->SetBooleanField(runObject, mBoldField, cell.attrs.bold);
+        env->SetIntField(runObject, mUnderlineField, cell.attrs.underline);
+        env->SetBooleanField(runObject, mItalicField, cell.attrs.italic);
+        env->SetBooleanField(runObject, mBlinkField, cell.attrs.blink);
+        env->SetBooleanField(runObject, mReverseField, cell.attrs.reverse);
+        env->SetBooleanField(runObject, mStrikeField, cell.attrs.strike);
+        env->SetIntField(runObject, mFontField, cell.attrs.font);
+        env->SetBooleanField(runObject, mDwlField, cell.attrs.dwl);
+        env->SetIntField(runObject, mDhlField, cell.attrs.dhl);
+        env->SetIntField(runObject, mImageIdField, imageId);
+        env->SetIntField(runObject, mPlacementIdField, placementId);
+        env->SetObjectField(runObject, mCharsField, tls_runArrays[filledRuns]);
+        // Same split as getCellRun: an image placeholder covers one cell but
+        // expands to several UTF-16 chars; a normal run's field is the column
+        // count Kotlin's updateLine walks by.
+        env->SetIntField(runObject, mRunLengthField, imageCell ? 1 : runColumns);
+
+        env->DeleteLocalRef(runObject);
+        filledRuns++;
+        col = endCol;
+    }
+
+    return filledRuns;
+}
+
 // Callback implementations
 int Terminal::termDamage(VTermRect rect, void* user) {
     auto* term = static_cast<Terminal*>(user);
@@ -1523,6 +1681,15 @@ Java_org_connectbot_terminal_TerminalNative_nativeGetCellRun(JNIEnv* env, jobjec
     auto* term = reinterpret_cast<Terminal*>(ptr);
     Terminal::CallbackScope scope(*term, env, callbacks);
     return term->getCellRun(env, row, col, runObject);
+}
+
+JNIEXPORT jint JNICALL
+Java_org_connectbot_terminal_TerminalNative_nativeGetRowRuns(JNIEnv* env, jobject /* thiz */,
+                                                             jlong ptr, jobject callbacks,
+                                                             jint row, jobjectArray runObjects) {
+    auto* term = reinterpret_cast<Terminal*>(ptr);
+    Terminal::CallbackScope scope(*term, env, callbacks);
+    return term->getRowRuns(env, row, runObjects);
 }
 
 JNIEXPORT jint JNICALL

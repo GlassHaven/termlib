@@ -87,6 +87,7 @@ public:
 
     // Cell data retrieval for rendering
     int getCellRun(JNIEnv* env, int row, int col, jobject runObject);
+    int getRowRuns(JNIEnv* env, int row, jobjectArray runObjects);
 
     // Line info retrieval (for continuation/soft-wrap detection)
     bool getLineContinuation(int row);
