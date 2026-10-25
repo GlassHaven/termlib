@@ -107,7 +107,7 @@ private:
     static int termMovecursor(VTermPos pos, VTermPos oldpos, int visible, void* user);
     static int termSettermprop(VTermProp prop, VTermValue* val, void* user);
     static int termBell(void* user);
-    static int termSbPushline(int cols, const VTermScreenCell* cells, bool softWrapped, void* user);
+    static int termSbPushline(int cols, const VTermScreenCell* cells, bool softWrapped, int scrollEndRow, void* user);
     static int termSbPopline(int cols, VTermScreenCell* cells, void* user);
     static int termSbClear(void* user);
 
@@ -155,7 +155,7 @@ private:
     void invokeMoveCursor(int row, int col, int oldRow, int oldCol, bool visible);
     void invokeSetTermProp(VTermProp prop, VTermValue* val);
     void invokeBell();
-    void invokePushScrollbackLine(int cols, const VTermScreenCell* cells, bool softWrapped);
+    void invokePushScrollbackLine(int cols, const VTermScreenCell* cells, bool softWrapped, int scrollEndRow);
     int invokePopScrollbackLine(int cols, VTermScreenCell* cells);
     void invokeClearScrollback();
     void invokeKeyboardOutput(const char* data, size_t len);
@@ -199,6 +199,7 @@ private:
     jmethodID mSetTermPropMethod;
     jmethodID mBellMethod;
     jmethodID mPushScrollbackMethod;
+    jmethodID mPushScrollbackRegionMethod;
     jmethodID mPopScrollbackMethod;
     jmethodID mClearScrollbackMethod;
     jmethodID mKeyboardInputMethod;

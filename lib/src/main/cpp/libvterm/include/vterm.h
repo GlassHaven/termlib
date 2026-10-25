@@ -557,8 +557,9 @@ typedef struct {
   int (*clear_images)(void *user);
   int (*image_resize)(int buffer, int delta, int rows, int cols, void *user);
   /* Scrollback push carrying the pushed row's pre-shift soft-wrap status
-   * (true iff the row immediately following it had continuation != 0). */
-  int (*sb_pushline_sr)(int cols, const VTermScreenCell *cells, bool soft_wrapped, void *user);
+   * (true iff the row immediately following it had continuation != 0) and
+   * the exclusive bottom row of the active scroll region. */
+  int (*sb_pushline_sr)(int cols, const VTermScreenCell *cells, bool soft_wrapped, int scroll_end_row, void *user);
 } VTermScreenCallbacks;
 
 /* Reserve inline image cells without recursively entering the input parser. */
