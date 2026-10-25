@@ -556,6 +556,9 @@ typedef struct {
   int (*scroll)(VTermRect rect, int downward, int rightward, void *user);
   int (*clear_images)(void *user);
   int (*image_resize)(int buffer, int delta, int rows, int cols, void *user);
+  /* Scrollback push carrying the pushed row's pre-shift soft-wrap status
+   * (true iff the row immediately following it had continuation != 0). */
+  int (*sb_pushline_sr)(int cols, const VTermScreenCell *cells, bool soft_wrapped, void *user);
 } VTermScreenCallbacks;
 
 /* Reserve inline image cells without recursively entering the input parser. */

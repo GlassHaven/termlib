@@ -168,11 +168,14 @@ internal class TerminalNative(
 
     /**
      * Fetch every style run of one row in a single native call (#749).
-     * The whole row is read under one lock hold, so a concurrent
-     * [writeInput] can never splice two terminal states into one rebuilt
-     * row. Fills [runs] from index 0 and returns the number filled; each
-     * run's [CellRun.runLength] is the screen-column count it covers (1 for
-     * an image placeholder), same semantics as [getCellRun].
+     * The whole row and its line-continuation metadata are read under one lock
+     * hold, so a concurrent [writeInput] can never splice two terminal states
+     * into one rebuilt row.
+     *
+     * Return value bit layout:
+     * - bits 0..28 ([ROW_RUNS_COUNT_MASK]): number of runs filled in [runs]
+     * - bit 29 ([ROW_RUNS_THIS_CONT_BIT]): true if `row` itself has continuation=1
+     * - bit 30 ([ROW_RUNS_NEXT_CONT_BIT]): true if `row + 1` has continuation=1 (`softWrapped`)
      */
     fun getRowRuns(row: Int, runs: Array<CellRun>): Int =
         withPtr { nativeGetRowRuns(it, checkNotNull(callbacks), row, runs) }
@@ -297,6 +300,9 @@ internal class TerminalNative(
     private external fun nativeSetCustomWideChars(ptr: Long, chars: IntArray?): Int
 
     companion object {
+        const val ROW_RUNS_COUNT_MASK = 0x1FFFFFFF
+        const val ROW_RUNS_THIS_CONT_BIT = 1 shl 29
+        const val ROW_RUNS_NEXT_CONT_BIT = 1 shl 30
         private const val LIBRARY_NAME = "jni_cb_term"
 
         init {

@@ -239,13 +239,14 @@ Terminal::Terminal(JNIEnv* env, jobject callbacks, int rows, int cols, bool enab
         .settermprop = termSettermprop,
         .bell = termBell,
         .resize = nullptr,  // We handle resize explicitly
-        .sb_pushline = termSbPushline,
+        .sb_pushline = nullptr,
         .sb_popline = termSbPopline,
         .sb_clear = termSbClear,
         .edit = termImageEdit,
         .scroll = termImageScroll,
         .clear_images = termImageClear,
-        .image_resize = termImageResize
+        .image_resize = termImageResize,
+        .sb_pushline_sr = termSbPushline
     };
     vterm_screen_set_callbacks(mVts, &mScreenCallbacks, this);
 
@@ -831,7 +832,27 @@ int Terminal::getRowRuns(JNIEnv* env, int row, jobjectArray runObjects) {
         col = endCol;
     }
 
-    return filledRuns;
+    // Pack line continuation flags under the SAME mLock hold as the cells so
+    // updateLine() never makes a second unlocked JNI call for softWrapped, and
+    // cross-chunk autowrap onto `row` can update `row - 1`'s softWrapped flag.
+    int flags = 0;
+    VTermState* state = mVt ? vterm_obtain_state(mVt) : nullptr;
+    if (state) {
+        if (row > 0 && row < mRows) {
+            const VTermLineInfo* thisInfo = vterm_state_get_lineinfo(state, row);
+            if (thisInfo && thisInfo->continuation != 0) {
+                flags |= (1 << 29);
+            }
+        }
+        if (row + 1 < mRows) {
+            const VTermLineInfo* nextInfo = vterm_state_get_lineinfo(state, row + 1);
+            if (nextInfo && nextInfo->continuation != 0) {
+                flags |= (1 << 30);
+            }
+        }
+    }
+
+    return filledRuns | flags;
 }
 
 // Callback implementations
@@ -864,21 +885,8 @@ int Terminal::termBell(void* user) {
     return 1;
 }
 
-int Terminal::termSbPushline(int cols, const VTermScreenCell* cells, void* user) {
+int Terminal::termSbPushline(int cols, const VTermScreenCell* cells, bool softWrapped, void* user) {
     auto* term = static_cast<Terminal*>(user);
-
-    // Check if row 1 (the next line after the one being pushed) is a continuation.
-    // If row 1 has continuation=1, it means the line being pushed (row 0) ended with
-    // a soft wrap rather than a hard line break.
-    VTermState* state = vterm_obtain_state(term->mVt);
-    bool softWrapped = false;
-    if (state && term->mRows > 1) {
-        const VTermLineInfo* nextLineInfo = vterm_state_get_lineinfo(state, 1);
-        if (nextLineInfo) {
-            softWrapped = nextLineInfo->continuation != 0;
-        }
-    }
-
     term->invokePushScrollbackLine(cols, cells, softWrapped);
     return 1;
 }

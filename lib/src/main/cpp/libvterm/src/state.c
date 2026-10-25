@@ -146,10 +146,24 @@ static void scroll(VTermState *state, VTermRect rect, int downward, int rightwar
     rightward = -cols;
 
   // Update lineinfo if full line
+  unsigned char stack_softwrap[64];
+  unsigned char *heap_softwrap = NULL;
   if(rect.start_col == 0 && rect.end_col == state->cols && rightward == 0) {
     int height = rect.end_row - rect.start_row - abs(downward);
 
     if(downward > 0) {
+      if(rect.start_row == 0) {
+        unsigned char *sw = downward <= (int)sizeof(stack_softwrap)
+          ? stack_softwrap
+          : (heap_softwrap = vterm_allocator_malloc(state->vt, downward));
+        if(sw) {
+          for(int r = 0; r < downward; r++)
+            sw[r] = (r + 1 < state->rows && state->lineinfo[r + 1].continuation) ? 1 : 0;
+          state->pushed_softwrap = sw;
+          state->pushed_softwrap_count = downward;
+        }
+      }
+
       memmove(state->lineinfo + rect.start_row,
               state->lineinfo + rect.start_row + downward,
               height * sizeof(state->lineinfo[0]));
@@ -166,12 +180,22 @@ static void scroll(VTermState *state, VTermRect rect, int downward, int rightwar
   }
 
   if(state->callbacks && state->callbacks->scrollrect)
-    if((*state->callbacks->scrollrect)(rect, downward, rightward, state->cbdata))
+    if((*state->callbacks->scrollrect)(rect, downward, rightward, state->cbdata)) {
+      state->pushed_softwrap = NULL;
+      state->pushed_softwrap_count = 0;
+      if(heap_softwrap)
+        vterm_allocator_free(state->vt, heap_softwrap);
       return;
+    }
 
   if(state->callbacks)
     vterm_scroll_rect(rect, downward, rightward,
         state->callbacks->moverect, state->callbacks->erase, state->cbdata);
+
+  state->pushed_softwrap = NULL;
+  state->pushed_softwrap_count = 0;
+  if(heap_softwrap)
+    vterm_allocator_free(state->vt, heap_softwrap);
 }
 
 static void linefeed(VTermState *state)
