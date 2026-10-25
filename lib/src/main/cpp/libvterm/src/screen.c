@@ -178,6 +178,20 @@ static int putglyph(VTermGlyphInfo *info, VTermPos pos, void *user)
   if(!cell)
     return 0;
 
+  int damage_start_col = pos.col;
+  int end_col = pos.col + info->width;
+  if(end_col > screen->cols)
+    end_col = screen->cols;
+  int damage_end_col = end_col;
+
+  /* Overwriting the right half of a wide glyph splits it; blank the left half. */
+  if(pos.col > 0 && cell->chars[0] == (uint32_t)-1) {
+    ScreenCell *left = getcell(screen, pos.row, pos.col - 1);
+    if(left)
+      left->chars[0] = 0;
+    damage_start_col = pos.col - 1;
+  }
+
   int i;
   for(i = 0; i < VTERM_MAX_CHARS_PER_CELL && info->chars[i]; i++) {
     cell->chars[i] = info->chars[i];
@@ -193,14 +207,25 @@ static int putglyph(VTermGlyphInfo *info, VTermPos pos, void *user)
       (color->rgb.red << 16) | (color->rgb.green << 8) | color->rgb.blue;
   }
 
-  for(int col = 1; col < info->width; col++)
+  for(int col = 1; col < info->width && (pos.col + col) < screen->cols; col++)
     getcell(screen, pos.row, pos.col + col)->chars[0] = (uint32_t)-1;
+
+  /* Overwriting the left half of a wide glyph leaves an orphaned continuation
+   * marker in end_col; blank it so get_cell does not treat the new width-1
+   * glyph as double-width. */
+  if(end_col < screen->cols) {
+    ScreenCell *right = getcell(screen, pos.row, end_col);
+    if(right && right->chars[0] == (uint32_t)-1) {
+      right->chars[0] = 0;
+      damage_end_col = end_col + 1;
+    }
+  }
 
   VTermRect rect = {
     .start_row = pos.row,
     .end_row   = pos.row+1,
-    .start_col = pos.col,
-    .end_col   = pos.col+info->width,
+    .start_col = damage_start_col,
+    .end_col   = damage_end_col,
   };
 
   cell->pen.protected_cell = info->protected_cell;
@@ -251,10 +276,36 @@ static int moverect_internal(VTermRect dest, VTermRect src, void *user)
     inc_row  = +1;
   }
 
-  for(int row = init_row; row != test_row; row += inc_row)
+  for(int row = init_row; row != test_row; row += inc_row) {
+    if(src.start_col > 0 || src.end_col < screen->cols ||
+       dest.start_col > 0 || dest.end_col < screen->cols) {
+      if(src.start_col > 0 && getcell(screen, row + downward, src.start_col)->chars[0] == (uint32_t)-1) {
+        getcell(screen, row + downward, src.start_col - 1)->chars[0] = 0;
+        getcell(screen, row + downward, src.start_col)->chars[0] = 0;
+        VTermRect extra = { row + downward, row + downward + 1, src.start_col - 1, src.start_col };
+        damagerect(screen, extra);
+      }
+      if(src.end_col < screen->cols && getcell(screen, row + downward, src.end_col)->chars[0] == (uint32_t)-1) {
+        getcell(screen, row + downward, src.end_col - 1)->chars[0] = 0;
+        getcell(screen, row + downward, src.end_col)->chars[0] = 0;
+        VTermRect extra = { row + downward, row + downward + 1, src.end_col, src.end_col + 1 };
+        damagerect(screen, extra);
+      }
+      if(dest.start_col > 0 && getcell(screen, row, dest.start_col)->chars[0] == (uint32_t)-1) {
+        getcell(screen, row, dest.start_col - 1)->chars[0] = 0;
+        VTermRect extra = { row, row + 1, dest.start_col - 1, dest.start_col };
+        damagerect(screen, extra);
+      }
+      if(dest.end_col < screen->cols && getcell(screen, row, dest.end_col)->chars[0] == (uint32_t)-1) {
+        getcell(screen, row, dest.end_col)->chars[0] = 0;
+        VTermRect extra = { row, row + 1, dest.end_col, dest.end_col + 1 };
+        damagerect(screen, extra);
+      }
+    }
     memmove(getcell(screen, row, dest.start_col),
             getcell(screen, row + downward, src.start_col),
             cols * sizeof(ScreenCell));
+  }
 
   return 1;
 }
@@ -283,6 +334,21 @@ static int erase_internal(VTermRect rect, int selective, void *user)
 
   for(int row = rect.start_row; row < screen->state->rows && row < rect.end_row; row++) {
     const VTermLineInfo *info = vterm_state_get_lineinfo(screen->state, row);
+
+    if(!selective) {
+      if(rect.start_col > 0 && rect.start_col < screen->cols &&
+         getcell(screen, row, rect.start_col)->chars[0] == (uint32_t)-1) {
+        getcell(screen, row, rect.start_col - 1)->chars[0] = 0;
+        VTermRect extra = { row, row + 1, rect.start_col - 1, rect.start_col };
+        damagerect(screen, extra);
+      }
+      if(rect.end_col > rect.start_col && rect.end_col < screen->cols &&
+         getcell(screen, row, rect.end_col)->chars[0] == (uint32_t)-1) {
+        getcell(screen, row, rect.end_col)->chars[0] = 0;
+        VTermRect extra = { row, row + 1, rect.end_col, rect.end_col + 1 };
+        damagerect(screen, extra);
+      }
+    }
 
     /* Inline images (#583): a full non-selective row erase invalidates every
      * image slice whose cells it overwrites; report it with one edit rect. */
@@ -1063,10 +1129,15 @@ int vterm_screen_get_cell(const VTermScreen *screen, VTermPos pos, VTermScreenCe
   if(!intcell)
     return 0;
 
-  for(int i = 0; i < VTERM_MAX_CHARS_PER_CELL; i++) {
-    cell->chars[i] = intcell->chars[i];
-    if(!intcell->chars[i])
-      break;
+  if(intcell->chars[0] == (uint32_t)-1) {
+    cell->chars[0] = 0;
+  }
+  else {
+    for(int i = 0; i < VTERM_MAX_CHARS_PER_CELL; i++) {
+      cell->chars[i] = intcell->chars[i];
+      if(!intcell->chars[i])
+        break;
+    }
   }
 
   cell->attrs.bold      = intcell->pen.bold;
