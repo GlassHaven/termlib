@@ -3,6 +3,7 @@
     <string name="terminal_selection_copy">कॉपी करें</string>
     <string name="terminal_selection_more_options_description">अधिक विकल्प</string>
     <string name="terminal_selection_select_all">सभी चुनें</string>
+    <string name="terminal_selection_select_all_visible">दृश्यमान सभी चुनें</string>
     <string name="terminal_selection_share">साझा करें</string>
     <string name="terminal_selection_paste">पेस्ट करें</string>
     <string name="terminal_selection_mode_character">मोड: वर्ण</string>
