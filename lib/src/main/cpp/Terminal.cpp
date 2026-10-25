@@ -415,6 +415,18 @@ int Terminal::setBoldHighbright(int enabled) {
     return 0;
 }
 
+int Terminal::setAmbiwidth(int enabled) {
+    std::scoped_lock lock(mLock);
+    vterm_set_ambiwidth(enabled);
+    return 0;
+}
+
+int Terminal::setCustomWideChars(const uint32_t* chars, int count) {
+    std::scoped_lock lock(mLock);
+    vterm_set_custom_wide_chars(chars, count);
+    return 0;
+}
+
 int Terminal::setDefaultColors(uint32_t fgColor, uint32_t bgColor) {
     std::scoped_lock lock(mLock);
 
@@ -1823,19 +1835,26 @@ Java_org_connectbot_terminal_TerminalNative_nativeSetBoldHighbright(JNIEnv* env,
 JNIEXPORT jint JNICALL
 Java_org_connectbot_terminal_TerminalNative_nativeSetAmbiwidth(JNIEnv* /* env */, jobject /* thiz */,
                                                                 jlong ptr, jboolean enabled) {
+    auto* term = reinterpret_cast<Terminal*>(ptr);
+    if (term) {
+        return term->setAmbiwidth(enabled ? 1 : 0);
+    }
     vterm_set_ambiwidth(enabled ? 1 : 0);
     return 0;
 }
 
 JNIEXPORT jint JNICALL
 Java_org_connectbot_terminal_TerminalNative_nativeSetCustomWideChars(JNIEnv* env, jobject /* thiz */,
-                                                                    jlong /* ptr */, jintArray wideChars) {
+                                                                    jlong ptr, jintArray wideChars) {
+    auto* term = reinterpret_cast<Terminal*>(ptr);
     if (!wideChars) {
+        if (term) return term->setCustomWideChars(nullptr, 0);
         vterm_set_custom_wide_chars(nullptr, 0);
         return 0;
     }
     jsize len = env->GetArrayLength(wideChars);
     if (len <= 0) {
+        if (term) return term->setCustomWideChars(nullptr, 0);
         vterm_set_custom_wide_chars(nullptr, 0);
         return 0;
     }
@@ -1843,9 +1862,14 @@ Java_org_connectbot_terminal_TerminalNative_nativeSetCustomWideChars(JNIEnv* env
     if (!elements) {
         return -1;
     }
-    vterm_set_custom_wide_chars(reinterpret_cast<const uint32_t*>(elements), len);
+    int rc = 0;
+    if (term) {
+        rc = term->setCustomWideChars(reinterpret_cast<const uint32_t*>(elements), len);
+    } else {
+        vterm_set_custom_wide_chars(reinterpret_cast<const uint32_t*>(elements), len);
+    }
     env->ReleaseIntArrayElements(wideChars, elements, JNI_ABORT);
-    return 0;
+    return rc;
 }
 
 } // extern "C"
