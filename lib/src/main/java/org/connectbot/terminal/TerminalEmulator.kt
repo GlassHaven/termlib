@@ -1053,14 +1053,7 @@ internal class TerminalEmulatorImpl(
         return 0
     }
 
-    // Track the last moverect source region so pushScrollbackLine knows
-    // whether it was a full-screen or partial scroll region scroll.
-    private var lastMoveRectSrc: TermRect? = null
-
     override fun moverect(dest: TermRect, src: TermRect): Int {
-        // Save source rect — pushScrollbackLine uses it to limit segment shifting
-        // to lines within the scroll region (avoiding corruption of tmux status bars etc.)
-        lastMoveRectSrc = src
         // Treat moverect as display damage on the destination. Semantic segments
         // are shifted alongside the moved text elsewhere, so preserve them here.
         synchronized(damageLock) {
@@ -1170,7 +1163,15 @@ internal class TerminalEmulatorImpl(
         return 0
     }
 
-    override fun pushScrollbackLine(cols: Int, cells: Array<ScreenCell>, softWrapped: Boolean): Int {
+    override fun pushScrollbackLine(cols: Int, cells: Array<ScreenCell>, softWrapped: Boolean): Int =
+        pushScrollbackLine(cols, cells, softWrapped, scrollEndRow = -1)
+
+    override fun pushScrollbackLine(
+        cols: Int,
+        cells: Array<ScreenCell>,
+        softWrapped: Boolean,
+        scrollEndRow: Int,
+    ): Int {
         // Convert ScreenCell array to TerminalLine
         val cellList = cells.take(cols).map { screenCell ->
             TerminalLine.Cell(
@@ -1188,8 +1189,8 @@ internal class TerminalEmulatorImpl(
         }
 
         synchronized(damageLock) {
-            // FIRST: Preserve semantic segments from line 0 (the line being scrolled out)
-            // This must happen BEFORE we shift segments, since moverect was already called
+            // Preserve semantic segments from line 0 (the line being scrolled out)
+            // before shifting remaining segments within the scroll region.
             val line0Segments = if (currentLines.isNotEmpty()) {
                 currentLines[0].semanticSegments
             } else {
@@ -1209,29 +1210,32 @@ internal class TerminalEmulatorImpl(
             }
             scrollbackDirty = true
 
-            // Shift semantic segments up within the scroll region only.
-            // Lines outside the region (e.g. tmux status bar) keep their segments.
-            val moveRect = lastMoveRectSrc
-            lastMoveRectSrc = null
+            // Under VTERM_DAMAGE_SCROLL, sb_pushline runs before moverect_user, so
+            // use scrollEndRow passed directly from libvterm's moverect_internal /
+            // resize_buffer. Only shift semanticSegments — never copy row+1's cells
+            // onto row, which shifted undamaged lines below a DECSTBM region and
+            // duplicated bottom cells before damage flushed.
             if (currentLines.size > 1) {
-                val shiftEnd = if (moveRect != null) {
-                    // Partial scroll region: only shift within the region
-                    moveRect.endRow.coerceAtMost(currentLines.size)
+                val shiftEnd = if (scrollEndRow > 0) {
+                    scrollEndRow.coerceAtMost(currentLines.size)
                 } else {
-                    // Full-screen scroll
                     currentLines.size
                 }
                 val newLines = currentLines.toMutableList()
                 for (row in 0 until shiftEnd - 1) {
                     shiftStoredSegmentTexts(fromRow = row + 1, toRow = row)
-                    newLines[row] = currentLines[row + 1].copy(row = row)
+                    val movedSegments = currentLines[row + 1].semanticSegments
+                    if (currentLines[row].semanticSegments != movedSegments) {
+                        newLines[row] = currentLines[row].copy(semanticSegments = movedSegments)
+                    }
                 }
-                // Clear segments for the last line in the scroll region
-                if (shiftEnd > 0 && shiftEnd <= currentLines.size) {
+                if (shiftEnd in 1..currentLines.size) {
                     removeStoredSegmentTexts(shiftEnd - 1)
-                    newLines[shiftEnd - 1] = currentLines[shiftEnd - 1].copy(
-                        semanticSegments = emptyList(),
-                    )
+                    if (currentLines[shiftEnd - 1].semanticSegments.isNotEmpty()) {
+                        newLines[shiftEnd - 1] = currentLines[shiftEnd - 1].copy(
+                            semanticSegments = emptyList(),
+                        )
+                    }
                 }
                 currentLines = newLines
             }
@@ -1255,6 +1259,7 @@ internal class TerminalEmulatorImpl(
     }
 
     override fun popScrollbackLine(cols: Int, cells: Array<ScreenCell>): Int {
+        val poppedSoftWrapped: Boolean
         synchronized(damageLock) {
             if (scrollback.isEmpty()) return 0
             if (!backfillScrollbackOnGrow) return 0
@@ -1262,66 +1267,98 @@ internal class TerminalEmulatorImpl(
             var line = scrollback.removeAt(scrollback.size - 1)
             scrollbackDirty = true
 
-            // #478: a pop at a width narrower than the stored content used to
-            // hand vterm the first `cols` cells and drop the line — rotating
-            // landscape→portrait destroyed every wide line's tail as the row
-            // growth popped 80-col lines onto a 40-col screen. vterm pops
-            // bottom-up, so deliver the LAST row's worth of content and
-            // re-store the head soft-wrapped: the next pop takes the head,
-            // and the line renders wrapped instead of ceasing to exist.
-            // (Content width ignores trailing blanks — every pushed line is
-            // padded to the old grid width; a styled blank tail past the last
-            // glyph is the one thing this trim can drop. A double-width char
-            // straddling the split renders mangled at the seam, not lost.)
-            val contentWidth = line.cells.indexOfLast {
+            // #478: measure and split by DISPLAY columns (not cell count), since
+            // invokePushScrollbackLine omits width-2 continuation placeholders and
+            // libvterm's sb_popline loop indexes sb_buffer by display column
+            // (`pos.col += sb_buffer[pos.col].width`).
+            val lastContentIdx = line.cells.indexOfLast {
                 it.char != ' ' || it.combiningChars.isNotEmpty()
-            } + 1
-            if (contentWidth > cols) {
-                val split = ((contentWidth - 1) / cols) * cols
-                scrollback.add(
-                    line.copy(cells = line.cells.take(split), softWrapped = true),
-                )
-                line = line.copy(cells = line.cells.subList(split, contentWidth).toList())
             }
-
-            // Convert TerminalLine.Cell back to ScreenCell (reverse of pushScrollbackLine)
-            for (i in 0 until minOf(cols, cells.size)) {
-                val cell = line.cells.getOrNull(i)
-                if (cell != null) {
-                    cells[i] = ScreenCell(
-                        char = cell.char,
-                        combiningChars = cell.combiningChars,
-                        fgRed = (cell.fgColor.red * 255).toInt(),
-                        fgGreen = (cell.fgColor.green * 255).toInt(),
-                        fgBlue = (cell.fgColor.blue * 255).toInt(),
-                        bgRed = (cell.bgColor.red * 255).toInt(),
-                        bgGreen = (cell.bgColor.green * 255).toInt(),
-                        bgBlue = (cell.bgColor.blue * 255).toInt(),
-                        bold = cell.bold,
-                        italic = cell.italic,
-                        underline = cell.underline,
-                        reverse = cell.reverse,
-                        strike = cell.strike,
-                        width = cell.width,
-                    )
-                } else {
-                    // Fill remaining columns with empty cells using current defaults
-                    cells[i] = ScreenCell(
-                        char = ' ',
-                        fgRed = (currentDefaultForeground.red * 255).toInt(),
-                        fgGreen = (currentDefaultForeground.green * 255).toInt(),
-                        fgBlue = (currentDefaultForeground.blue * 255).toInt(),
-                        bgRed = (currentDefaultBackground.red * 255).toInt(),
-                        bgGreen = (currentDefaultBackground.green * 255).toInt(),
-                        bgBlue = (currentDefaultBackground.blue * 255).toInt(),
-                    )
+            val contentCells = if (lastContentIdx >= 0) {
+                line.cells.subList(0, lastContentIdx + 1)
+            } else {
+                emptyList()
+            }
+            val maxCellWidth = cols.coerceIn(1, 2)
+            val totalDisplayCols = contentCells.sumOf { it.width.coerceIn(1, maxCellWidth) }
+            if (cols > 0 && totalDisplayCols > cols) {
+                var chunkStartIdx = 0
+                var prevChunkCols = 0
+                var colInChunk = 0
+                for (idx in contentCells.indices) {
+                    val w = contentCells[idx].width.coerceIn(1, maxCellWidth)
+                    if (colInChunk + w > cols && colInChunk > 0) {
+                        prevChunkCols = colInChunk
+                        chunkStartIdx = idx
+                        colInChunk = 0
+                    }
+                    colInChunk += w
                 }
+                if (chunkStartIdx > 0) {
+                    scrollback.add(
+                        line.copy(
+                            cells = contentCells.subList(0, chunkStartIdx).toList(),
+                            softWrapped = (prevChunkCols == cols),
+                        ),
+                    )
+                    line = line.copy(cells = contentCells.subList(chunkStartIdx, contentCells.size).toList())
+                }
+            }
+            poppedSoftWrapped = line.softWrapped
+
+            val defaultFgR = (currentDefaultForeground.red * 255).toInt()
+            val defaultFgG = (currentDefaultForeground.green * 255).toInt()
+            val defaultFgB = (currentDefaultForeground.blue * 255).toInt()
+            val defaultBgR = (currentDefaultBackground.red * 255).toInt()
+            val defaultBgG = (currentDefaultBackground.green * 255).toInt()
+            val defaultBgB = (currentDefaultBackground.blue * 255).toInt()
+            fun blankScreenCell() = ScreenCell(
+                char = ' ',
+                fgRed = defaultFgR,
+                fgGreen = defaultFgG,
+                fgBlue = defaultFgB,
+                bgRed = defaultBgR,
+                bgGreen = defaultBgG,
+                bgBlue = defaultBgB,
+            )
+
+            // Place each cell at its display column so wide glyphs advance by 2 columns
+            // instead of having the following character skipped by libvterm.
+            val limit = minOf(cols, cells.size)
+            var displayCol = 0
+            for (cell in line.cells) {
+                if (displayCol >= limit) break
+                val w = if (cell.width == 2 && displayCol + 1 < limit) 2 else 1
+                cells[displayCol] = ScreenCell(
+                    char = cell.char,
+                    combiningChars = cell.combiningChars,
+                    fgRed = (cell.fgColor.red * 255).toInt(),
+                    fgGreen = (cell.fgColor.green * 255).toInt(),
+                    fgBlue = (cell.fgColor.blue * 255).toInt(),
+                    bgRed = (cell.bgColor.red * 255).toInt(),
+                    bgGreen = (cell.bgColor.green * 255).toInt(),
+                    bgBlue = (cell.bgColor.blue * 255).toInt(),
+                    bold = cell.bold,
+                    italic = cell.italic,
+                    underline = cell.underline,
+                    reverse = cell.reverse,
+                    strike = cell.strike,
+                    width = w,
+                )
+                if (w == 2) {
+                    cells[displayCol + 1] = blankScreenCell()
+                }
+                displayCol += w
+            }
+            while (displayCol < limit) {
+                cells[displayCol] = blankScreenCell()
+                displayCol++
             }
 
             propertyChanged = true
             requestProcessPendingUpdatesLocked()
         }
-        return 1
+        return if (poppedSoftWrapped) 2 else 1
     }
 
     override fun onKeyboardInput(data: ByteArray): Int {

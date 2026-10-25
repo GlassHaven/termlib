@@ -240,14 +240,14 @@ static int putglyph(VTermGlyphInfo *info, VTermPos pos, void *user)
   return 1;
 }
 
-static void sb_pushline_from_row(VTermScreen *screen, int row, bool soft_wrapped)
+static void sb_pushline_from_row(VTermScreen *screen, int row, bool soft_wrapped, int scroll_end_row)
 {
   VTermPos pos = { .row = row };
   for(pos.col = 0; pos.col < screen->cols; pos.col++)
     vterm_screen_get_cell(screen, pos, screen->sb_buffer + pos.col);
 
   if(screen->callbacks->sb_pushline_sr)
-    (screen->callbacks->sb_pushline_sr)(screen->cols, screen->sb_buffer, soft_wrapped, screen->cbdata);
+    (screen->callbacks->sb_pushline_sr)(screen->cols, screen->sb_buffer, soft_wrapped, scroll_end_row, screen->cbdata);
   else
     (screen->callbacks->sb_pushline)(screen->cols, screen->sb_buffer, screen->cbdata);
 }
@@ -265,7 +265,7 @@ static int moverect_internal(VTermRect dest, VTermRect src, void *user)
                            row < screen->state->pushed_softwrap_count)
         ? (screen->state->pushed_softwrap[row] != 0)
         : false;
-      sb_pushline_from_row(screen, row, soft_wrapped);
+      sb_pushline_from_row(screen, row, soft_wrapped, src.end_row);
     }
   }
 
@@ -808,7 +808,7 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
     if(screen->callbacks && (screen->callbacks->sb_pushline_sr || screen->callbacks->sb_pushline))
       for(int row = 0; row <= old_row; row++) {
         bool soft_wrapped = old_lineinfo && (row + 1) < old_rows && old_lineinfo[row + 1].continuation != 0;
-        sb_pushline_from_row(screen, row, soft_wrapped);
+        sb_pushline_from_row(screen, row, soft_wrapped, old_rows);
       }
     if(active)
       statefields->pos.row -= (old_row + 1);
@@ -830,7 +830,8 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
      * naturally continues the same line upward). sb_buffer is allocated to
      * max(old_cols, new_cols), so the narrower request always fits. */
     while(new_row >= 0) {
-      if(!(screen->callbacks->sb_popline(new_cols, screen->sb_buffer, screen->cbdata)))
+      int pop_res = screen->callbacks->sb_popline(new_cols, screen->sb_buffer, screen->cbdata);
+      if(!pop_res)
         break;
 
       VTermPos pos = { .row = new_row };
@@ -868,6 +869,8 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
       for( ; pos.col < new_cols; pos.col++)
         clearcell(screen, &new_buffer[pos.row * new_cols + pos.col]);
       new_lineinfo[pos.row] = (VTermLineInfo){ 0 };
+      if(pop_res == 2 && (pos.row + 1) < new_rows)
+        new_lineinfo[pos.row + 1].continuation = 1;
       new_row--;
 
       if(active)

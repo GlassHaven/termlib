@@ -92,6 +92,12 @@ Terminal::Terminal(JNIEnv* env, jobject callbacks, int rows, int cols, bool enab
     if (!mPushScrollbackMethod) {
         LOGE("Failed to find pushScrollbackLine method");
     }
+    mPushScrollbackRegionMethod = env->GetMethodID(callbacksClass, "pushScrollbackLine",
+        "(I[Lorg/connectbot/terminal/ScreenCell;ZI)I");
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        mPushScrollbackRegionMethod = nullptr;
+    }
     mPopScrollbackMethod = env->GetMethodID(callbacksClass, "popScrollbackLine",
         "(I[Lorg/connectbot/terminal/ScreenCell;)I");
     if (!mPopScrollbackMethod) {
@@ -885,9 +891,9 @@ int Terminal::termBell(void* user) {
     return 1;
 }
 
-int Terminal::termSbPushline(int cols, const VTermScreenCell* cells, bool softWrapped, void* user) {
+int Terminal::termSbPushline(int cols, const VTermScreenCell* cells, bool softWrapped, int scrollEndRow, void* user) {
     auto* term = static_cast<Terminal*>(user);
-    term->invokePushScrollbackLine(cols, cells, softWrapped);
+    term->invokePushScrollbackLine(cols, cells, softWrapped, scrollEndRow);
     return 1;
 }
 
@@ -1225,8 +1231,8 @@ void Terminal::invokeBell() {
     JNI_CHECK_EXCEPTION(env);
 }
 
-void Terminal::invokePushScrollbackLine(int cols, const VTermScreenCell* cells, bool softWrapped) {
-    if (!mPushScrollbackMethod) {
+void Terminal::invokePushScrollbackLine(int cols, const VTermScreenCell* cells, bool softWrapped, int scrollEndRow) {
+    if (!mPushScrollbackMethod && !mPushScrollbackRegionMethod) {
         return;
     }
 
@@ -1339,8 +1345,19 @@ void Terminal::invokePushScrollbackLine(int cols, const VTermScreenCell* cells, 
         env->SetObjectArrayElement(actualCellArray, i, screenCells[i].get());
     }
 
-    // Call the Java callback with actual cell count and soft wrap status
-    env->CallIntMethod(mCallbacks, mPushScrollbackMethod, actualCells, actualCellArray.get(), (jboolean)softWrapped);
+    // Call the Java callback with actual cell count, soft wrap status, and scroll region bound
+    if (mPushScrollbackRegionMethod) {
+        env->CallIntMethod(
+            mCallbacks,
+            mPushScrollbackRegionMethod,
+            actualCells,
+            actualCellArray.get(),
+            (jboolean)softWrapped,
+            (jint)scrollEndRow
+        );
+    } else {
+        env->CallIntMethod(mCallbacks, mPushScrollbackMethod, actualCells, actualCellArray.get(), (jboolean)softWrapped);
+    }
     JNI_CHECK_EXCEPTION(env);
 }
 
@@ -1415,25 +1432,43 @@ int Terminal::invokePopScrollbackLine(int cols, VTermScreenCell* cells) {
         }
 
         VTermScreenCell& cell = cells[i];
+        cell.attrs = {};
 
-        // Get primary character
-        jchar primaryChar = env->GetCharField(screenCell, charField);
-        cell.chars[0] = primaryChar;
+        // Collect UTF-16 code units from primaryChar + combiningChars and recombine
+        // surrogate pairs back into UTF-32 codepoints for libvterm.
+        std::vector<jchar> utf16Units;
+        utf16Units.push_back(env->GetCharField(screenCell, charField));
 
-        // Get combining characters
         ScopedLocalRef<jobject> combiningList(env, env->GetObjectField(screenCell, combiningCharsField));
-        int charIndex = 1;
         if (combiningList.get()) {
             jint listLen = env->CallIntMethod(combiningList, listSize);
             JNI_CHECK_EXCEPTION_RETURN(env, 0);
-            for (int j = 0; j < listLen && charIndex < VTERM_MAX_CHARS_PER_CELL; j++) {
+            for (int j = 0; j < listLen; j++) {
                 ScopedLocalRef<jobject> charObj(env, env->CallObjectMethod(combiningList, listGet, j));
                 JNI_CHECK_EXCEPTION_RETURN(env, 0);
                 if (charObj.get()) {
-                    cell.chars[charIndex++] = env->CallCharMethod(charObj, charValue);
+                    jchar ch = env->CallCharMethod(charObj, charValue);
                     JNI_CHECK_EXCEPTION_RETURN(env, 0);
+                    utf16Units.push_back(ch);
                 }
             }
+        }
+
+        int charIndex = 0;
+        for (size_t u = 0; u < utf16Units.size() && charIndex < VTERM_MAX_CHARS_PER_CELL; ) {
+            jchar hi = utf16Units[u];
+            if (hi >= 0xD800 && hi <= 0xDBFF && (u + 1) < utf16Units.size()) {
+                jchar lo = utf16Units[u + 1];
+                if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                    cell.chars[charIndex++] = 0x10000u +
+                        (((static_cast<uint32_t>(hi) - 0xD800u) << 10) |
+                         (static_cast<uint32_t>(lo) - 0xDC00u));
+                    u += 2;
+                    continue;
+                }
+            }
+            cell.chars[charIndex++] = static_cast<uint32_t>(hi);
+            u += 1;
         }
         // Fill remaining with zeros
         for (; charIndex < VTERM_MAX_CHARS_PER_CELL; charIndex++) {
@@ -1459,7 +1494,7 @@ int Terminal::invokePopScrollbackLine(int cols, VTermScreenCell* cells) {
         cell.width = env->GetIntField(screenCell, widthField);
     }
 
-    return 1;
+    return result;
 }
 
 void Terminal::invokeClearScrollback() {

@@ -89,6 +89,17 @@ internal interface TerminalCallbacks {
     fun pushScrollbackLine(cols: Int, cells: Array<ScreenCell>, softWrapped: Boolean): Int
 
     /**
+     * Scrollback push carrying the exclusive bottom row of the active scroll region
+     * so cached lines below a top-anchored DECSTBM region remain untouched.
+     */
+    fun pushScrollbackLine(
+        cols: Int,
+        cells: Array<ScreenCell>,
+        softWrapped: Boolean,
+        scrollEndRow: Int,
+    ): Int = pushScrollbackLine(cols, cells, softWrapped)
+
+    /**
      * Called when a line should be popped from scrollback buffer.
      *
      * @param cols Number of columns expected
