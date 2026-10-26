@@ -1634,8 +1634,7 @@ class ImeInputViewTest {
         }
     }
 
-    private fun interopFixture(): InteropTeardownFixture =
-        InteropTeardownFixture(context, makeView())
+    private fun interopFixture(): InteropTeardownFixture = InteropTeardownFixture(context, makeView())
 
     @Test
     fun testRemovingFocusedInteropChildRefocusesFromRoot() {
@@ -1834,11 +1833,52 @@ class ImeInputViewTest {
         }
     }
 
+    @Test
+    fun testInteropTeardownDetachDoesNotHideOpenIme() {
+        // Tab switches run AndroidViewHolder.onDeactivate()/onRelease(), which calls
+        // onInteropReset() immediately followed by removeAllViewsInLayout().
+        // Detaching the old tab's ImeInputView during that interop teardown must NOT
+        // call hideSoftInputFromWindow — otherwise every tab switch hides the open
+        // keyboard and reopens it 100ms later, bouncing the viewport height (29->50->29)
+        // and sending two spurious SIGWINCHes to tmux.
+        val f = interopFixture()
+        val shadowImm = org.robolectric.Shadows.shadowOf(noOpImm)
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            f.view.showIme()
+            assertTrue("precondition: IME visible", shadowImm.isSoftInputVisible)
+
+            f.view.onInteropReset()
+            f.holder.removeAllViewsInLayout()
+
+            assertTrue(
+                "interop teardown detach must not hide the open IME",
+                shadowImm.isSoftInputVisible,
+            )
+        }
+    }
+
+    @Test
+    fun testOrdinaryDetachStillHidesIme() {
+        val f = interopFixture()
+        val shadowImm = org.robolectric.Shadows.shadowOf(noOpImm)
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            f.view.showIme()
+            assertTrue("precondition: IME visible", shadowImm.isSoftInputVisible)
+
+            // Ordinary detach without onInteropReset (e.g. window/activity teardown)
+            f.holder.removeAllViewsInLayout()
+
+            assertFalse(
+                "ordinary detach must still hide the IME",
+                shadowImm.isSoftInputVisible,
+            )
+        }
+    }
+
     // ---------- held-DEL takeover bounds ----------
 
     /** DEL bytes delivered to the terminal so far. */
-    private fun delCount(outputs: List<ByteArray>): Int =
-        outputs.flatMap { it.toList() }.count { it == 0x7F.toByte() }
+    private fun delCount(outputs: List<ByteArray>): Int = outputs.flatMap { it.toList() }.count { it == 0x7F.toByte() }
 
     /**
      * A capture whose view is attached to a real window and focusable.

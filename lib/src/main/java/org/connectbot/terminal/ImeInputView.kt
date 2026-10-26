@@ -225,8 +225,7 @@ internal class ImeInputView(
      * reports KEYBOARD_QWERTY while the keys are physically unreachable, and there
      * the soft keyboard is the only way to type.
      */
-    private fun showImeFlags(): Int =
-        imeShowFlags(resources.configuration.keyboard, resources.configuration.hardKeyboardHidden)
+    private fun showImeFlags(): Int = imeShowFlags(resources.configuration.keyboard, resources.configuration.hardKeyboardHidden)
 
     /**
      * Hide the IME.
@@ -392,11 +391,17 @@ internal class ImeInputView(
     }
 
     override fun onDetachedFromWindow() {
+        val wasInteropTeardown = interopTeardown
         super.onDetachedFromWindow()
         interopTeardown = false
         // Always hide IME when view is detached to prevent SHOW_FORCED from keeping keyboard
-        // open after the app/activity is destroyed
-        hideIme()
+        // open after the app/activity is destroyed — except during a Compose interop
+        // teardown (onInteropReset -> removeAllViewsInLayout on tab switch), where hiding
+        // the IME tears down the open keyboard only for the new tab's Terminal to reopen
+        // it 100ms later, bouncing the viewport height and sending two SIGWINCHes (#714).
+        if (!wasInteropTeardown) {
+            hideIme()
+        }
         removeCallbacks(restoreFocusRunnable)
         // Cancel any deferred Enter-fallback so a Handler callback doesn't fire
         // into a detached view after the IME committed "\n" just before teardown.
@@ -423,8 +428,11 @@ internal class ImeInputView(
     private val heldDelRepeatRunnable = object : Runnable {
         override fun run() {
             if (SystemClock.uptimeMillis() >= heldDelRepeatUntil) {
-                Log.d(TAG, "held-DEL takeover stopped at its " +
-                    "${HELD_DEL_MAX_TAKEOVER_MS}ms bound; no key up arrived")
+                Log.d(
+                    TAG,
+                    "held-DEL takeover stopped at its " +
+                        "${HELD_DEL_MAX_TAKEOVER_MS}ms bound; no key up arrived",
+                )
                 return
             }
             activeConnection?.onUserDelKey()
@@ -677,7 +685,6 @@ internal class ImeInputView(
             }
             return super.performContextMenuAction(id)
         }
-
 
         /**
          * Tell the IME where the cursor is. Custom InputConnection

@@ -83,4 +83,87 @@ class ScrollStitchRaceTest {
             after[0].trim(),
         )
     }
+
+    @Test
+    fun `multi-row rebuild does not tear across concurrent thread writeInput`() {
+        val e = TerminalEmulatorFactory.create(initialRows = 4, initialCols = 20) as TerminalEmulatorImpl
+        e.writeInput("ROW0_STATE1\r\nROW1_STATE1\r\nROW2_STATE1\r\nROW3_STATE1".toByteArray())
+
+        val row0Fetched = java.util.concurrent.CountDownLatch(1)
+        val writerEntered = java.util.concurrent.CountDownLatch(1)
+        var writerThread: Thread? = null
+
+        e.onCellRunFetchedForTesting = {
+            e.onCellRunFetchedForTesting = null
+            row0Fetched.countDown()
+            // Give the background SSH reader thread a chance to call writeInput()
+            // while processPendingUpdates() is between row 0 and row 1.
+            writerEntered.await(2, java.util.concurrent.TimeUnit.SECONDS)
+            Thread.sleep(20)
+        }
+
+        writerThread = Thread {
+            row0Fetched.await(2, java.util.concurrent.TimeUnit.SECONDS)
+            writerEntered.countDown()
+            // Scroll up 1 line on the SSH reader thread: native row 0 becomes ROW1_STATE1,
+            // native row 1 becomes ROW2_STATE1, and scrollback gets ROW0_STATE1.
+            e.writeInput("\r\nROW4_STATE2".toByteArray())
+        }.apply { start() }
+
+        settle(e)
+        writerThread.join(2000)
+
+        // The snapshot emitted by the first settle(e) must NOT be a torn hybrid where
+        // lines[0] is ROW0_STATE1 (pre-scroll) while lines[1] is ROW2_STATE1 (post-scroll,
+        // skipping ROW1_STATE1) and scrollback already contains ROW0_STATE1.
+        val snap1 = e.snapshot.value
+        val lines1 = snap1.lines.map { it.text.trimEnd() }
+        assertEquals("ROW0_STATE1", lines1[0])
+        assertEquals(
+            "multi-row snapshot tore mid-frame across concurrent writeInput (ROW1_STATE1 skipped)",
+            "ROW1_STATE1",
+            lines1[1],
+        )
+        assertEquals(
+            "scrollback in pre-scroll snapshot must not already contain post-scroll line",
+            0,
+            snap1.scrollback.size,
+        )
+
+        // Draining the second write converges to STATE2.
+        settle(e)
+        val snap2 = e.snapshot.value
+        val lines2 = snap2.lines.map { it.text.trimEnd() }
+        assertEquals("ROW1_STATE1", lines2[0])
+        assertEquals("ROW2_STATE1", lines2[1])
+        assertEquals("ROW3_STATE1", lines2[2])
+        assertEquals("ROW4_STATE2", lines2[3])
+        assertEquals(1, snap2.scrollback.size)
+        assertEquals("ROW0_STATE1", snap2.scrollback[0].text.trimEnd())
+    }
+
+    @Test
+    fun `concurrent osc8 hyperlink during rebuild is not dropped by premature segment drain`() {
+        val e = TerminalEmulatorFactory.create(initialRows = 4, initialCols = 40) as TerminalEmulatorImpl
+        e.writeInput("row0".toByteArray())
+
+        e.onCellRunFetchedForTesting = {
+            e.onCellRunFetchedForTesting = null
+            // Simulate a write arriving on row 2 with an OSC 8 hyperlink while row 0 is rebuilding.
+            e.writeInput("\u001b[3;1H\u001b]8;;https://example.com\u0007clickme\u001b]8;;\u0007".toByteArray())
+        }
+
+        // First settle rebuilds row 0 (the only row damaged before the seam).
+        settle(e)
+        // Second settle rebuilds row 2 (damaged by the seam write).
+        settle(e)
+
+        val row2 = e.snapshot.value.lines[2]
+        assertEquals("clickme", row2.text.trimEnd())
+        assertEquals(
+            "OSC 8 hyperlink on row 2 was dropped by premature pendingSemanticSegments drain",
+            "https://example.com",
+            row2.getHyperlinkUrlAt(0, false),
+        )
+    }
 }

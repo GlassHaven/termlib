@@ -291,6 +291,7 @@ static pthread_mutex_t g_unicode_lock = PTHREAD_MUTEX_INITIALIZER;
 static int g_ambiwidth = 0;
 static uint32_t *g_custom_wide_chars = NULL;
 static int g_custom_wide_count = 0;
+static int g_custom_wide_set = 0;
 
 INTERNAL void vterm_set_ambiwidth(int enabled)
 {
@@ -307,6 +308,7 @@ void vterm_set_custom_wide_chars(const uint32_t *chars, int count)
     g_custom_wide_chars = NULL;
     g_custom_wide_count = 0;
   }
+  g_custom_wide_set = (chars != NULL) ? 1 : 0;
   if (chars && count > 0) {
     g_custom_wide_chars = (uint32_t *)malloc(count * sizeof(uint32_t));
     if (g_custom_wide_chars) {
@@ -327,9 +329,9 @@ INTERNAL int vterm_unicode_width(uint32_t codepoint)
 
   pthread_mutex_lock(&g_unicode_lock);
   const int ambiwidth = g_ambiwidth;
-  if (g_custom_wide_chars && g_custom_wide_count > 0) {
+  if (g_custom_wide_set) {
     int low = 0, high = g_custom_wide_count - 1;
-    while (low <= high) {
+    while (g_custom_wide_chars && low <= high) {
       int mid = low + (high - low) / 2;
       if (g_custom_wide_chars[mid] == codepoint) {
         pthread_mutex_unlock(&g_unicode_lock);

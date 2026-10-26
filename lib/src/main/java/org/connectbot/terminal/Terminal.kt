@@ -65,8 +65,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
@@ -295,8 +295,7 @@ internal fun scrollThresholdPx(density: Float): Float = SCROLL_THRESHOLD_DP * de
  * it. Clamped so a host value below 1 can't make scrolling twitchier than
  * the content default. Pure for the same reason as [scrollThresholdPx].
  */
-internal fun callbackScrollThresholdPx(density: Float, multiplier: Float): Float =
-    scrollThresholdPx(density) * multiplier.coerceAtLeast(1f)
+internal fun callbackScrollThresholdPx(density: Float, multiplier: Float): Float = scrollThresholdPx(density) * multiplier.coerceAtLeast(1f)
 
 /**
  * Fraction of terminal height at top/bottom that triggers edge-scroll
@@ -375,20 +374,18 @@ private val COPY_BUTTON_OFFSET = 48.dp
  * while a selection is active: a Paste pill rides along when a paste
  * handler is attached, adding one pill and one 8dp gap (#661).
  */
-internal fun selectionOverlayRowWidth(hasPaste: Boolean): Dp =
-    if (hasPaste) {
-        COPY_BUTTON_SIZE * 3 + 8.dp * 2
-    } else {
-        COPY_BUTTON_SIZE * 2 + 8.dp
-    }
+internal fun selectionOverlayRowWidth(hasPaste: Boolean): Dp = if (hasPaste) {
+    COPY_BUTTON_SIZE * 3 + 8.dp * 2
+} else {
+    COPY_BUTTON_SIZE * 2 + 8.dp
+}
 
 /**
  * Clamp the pill row's left edge so the whole row stays inside the
  * viewport: retract by the full row width when the selection end sits near
  * the right edge, and never go negative on narrow viewports (#661).
  */
-internal fun clampSelectionOverlayX(rawX: Float, rowWidthPx: Float, availableWidth: Float): Float =
-    rawX.coerceAtMost(availableWidth - rowWidthPx).coerceAtLeast(0f)
+internal fun clampSelectionOverlayX(rawX: Float, rowWidthPx: Float, availableWidth: Float): Float = rawX.coerceAtMost(availableWidth - rowWidthPx).coerceAtLeast(0f)
 
 /**
  * Clamp the pill row's top edge so it stays inside the viewport vertically.
@@ -397,8 +394,7 @@ internal fun clampSelectionOverlayX(rawX: Float, rowWidthPx: Float, availableWid
  * start anchor shifts one row per autoscroll step), and the raw Y was an
  * unbounded positive number that rendered the whole row off-screen.
  */
-internal fun clampSelectionOverlayY(rawY: Float, buttonHeightPx: Float, availableHeight: Float): Float =
-    rawY.coerceAtLeast(0f).coerceAtMost(maxOf(0f, availableHeight - buttonHeightPx))
+internal fun clampSelectionOverlayY(rawY: Float, buttonHeightPx: Float, availableHeight: Float): Float = rawY.coerceAtLeast(0f).coerceAtMost(maxOf(0f, availableHeight - buttonHeightPx))
 
 /**
  * Touch radius in pixels for detecting selection handle touches.
@@ -1503,6 +1499,7 @@ internal fun TerminalWithAccessibility(
 
             val dimensions = terminalEmulator.dimensions
             if (newRows == dimensions.rows && newCols == dimensions.columns) {
+                initialResizeDone = true
                 return@LaunchedEffect
             }
 
@@ -3563,7 +3560,6 @@ private fun DrawScope.drawLine(
                 )
             }
         }
-
     }
 
     // Inline images drawn above the text pass
@@ -3764,8 +3760,7 @@ internal const val ROTATION_INSET_SETTLE_MS = 500L
  * enough for a backgrounding's focus loss to arrive; everything else keeps the
  * short pen-leak debounce.
  */
-internal fun resizeDebounceMs(reflowToKeyboard: Boolean, growingRows: Boolean): Long =
-    if (reflowToKeyboard && growingRows) KEYBOARD_HIDE_RESIZE_DEBOUNCE_MS else RESIZE_DEBOUNCE_MS
+internal fun resizeDebounceMs(reflowToKeyboard: Boolean, growingRows: Boolean): Long = if (reflowToKeyboard && growingRows) KEYBOARD_HIDE_RESIZE_DEBOUNCE_MS else RESIZE_DEBOUNCE_MS
 
 /**
  * Whether a rotation's transient oversized row sample must be held back from
@@ -4530,5 +4525,3 @@ internal fun updateMaxAvailableHeight(
         currentMaxHeight
     }
 }
-
-

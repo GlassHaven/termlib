@@ -1854,8 +1854,9 @@ Java_org_connectbot_terminal_TerminalNative_nativeSetCustomWideChars(JNIEnv* env
     }
     jsize len = env->GetArrayLength(wideChars);
     if (len <= 0) {
-        if (term) return term->setCustomWideChars(nullptr, 0);
-        vterm_set_custom_wide_chars(nullptr, 0);
+        const uint32_t empty = 0;
+        if (term) return term->setCustomWideChars(&empty, 0);
+        vterm_set_custom_wide_chars(&empty, 0);
         return 0;
     }
     jint* elements = env->GetIntArrayElements(wideChars, nullptr);

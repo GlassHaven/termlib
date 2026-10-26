@@ -541,12 +541,14 @@ internal class TerminalEmulatorImpl(
 
     override fun onImageEdit(kind: Int, top: Int, bottom: Int, left: Int, right: Int, downward: Int, rightward: Int) {
         synchronized(damageLock) {
-            when (kind) {
-                0 -> imageStore.edit(TermRect(top, bottom, left, right))
-                1 -> imageStore.scroll(TermRect(top, bottom, left, right), downward, rightward)
-                2 -> imageStore.clearScreen()
-                3 -> imageStore.resizeImages(top != 0, downward, bottom, left)
-                4 -> imageProtocol.reset()
+            synchronized(imageStore) {
+                when (kind) {
+                    0 -> imageStore.edit(TermRect(top, bottom, left, right))
+                    1 -> imageStore.scroll(TermRect(top, bottom, left, right), downward, rightward)
+                    2 -> imageStore.clearScreen()
+                    3 -> imageStore.resizeImages(top != 0, downward, bottom, left)
+                    4 -> imageProtocol.reset()
+                }
             }
         }
     }
@@ -622,13 +624,25 @@ internal class TerminalEmulatorImpl(
 
     override fun setAmbiwidthMode(mode: AmbiwidthMode, codepoints: IntArray?): Unit = synchronized(configLock) {
         if (closed) return
-        val sorted = codepoints?.clone()?.apply { sort() }
-        synchronized(damageLock) {
+        val explicitSorted = codepoints?.clone()?.apply { sort() }
+        if (mode.isAuto && explicitSorted != null) {
+            FontWidthProfiler.lastProfiledCodepoints = explicitSorted
+        }
+        val resolved = synchronized(damageLock) {
             ambiwidthMode = mode
-            customWideCodepoints = sorted
+            if (explicitSorted != null) {
+                customWideCodepoints = explicitSorted
+            } else if (!mode.isAuto) {
+                customWideCodepoints = null
+            }
+            when {
+                explicitSorted != null -> explicitSorted
+                mode.isAuto -> customWideCodepoints ?: FontWidthProfiler.lastProfiledCodepoints ?: EMPTY_INT_ARRAY
+                else -> null
+            }
         }
         whenOpen("setAmbiwidthMode") {
-            terminalNative.setCustomWideChars(sorted)
+            terminalNative.setCustomWideChars(resolved)
             terminalNative.setAmbiwidth(mode.fallbackWide)
         }
         invalidateDisplay()
@@ -774,7 +788,12 @@ internal class TerminalEmulatorImpl(
                 logger.error("Failed to set boldAsBright=$boldAsBright")
             }
             val (initialCustomWide, initialFallbackWide) = synchronized(damageLock) {
-                customWideCodepoints to ambiwidthMode.fallbackWide
+                val effective = if (ambiwidthMode.isAuto) {
+                    customWideCodepoints ?: FontWidthProfiler.lastProfiledCodepoints ?: EMPTY_INT_ARRAY
+                } else {
+                    customWideCodepoints
+                }
+                effective to ambiwidthMode.fallbackWide
             }
             setCustomWideChars(initialCustomWide)
             setAmbiwidth(initialFallbackWide)
@@ -832,8 +851,7 @@ internal class TerminalEmulatorImpl(
     /**
      * Write data to the terminal (from PTY/transport).
      */
-    override fun writeInput(data: ByteArray, offset: Int, length: Int) =
-        whenOpen("writeInput") { terminalNative.writeInput(data, offset, length) }
+    override fun writeInput(data: ByteArray, offset: Int, length: Int) = whenOpen("writeInput") { terminalNative.writeInput(data, offset, length) }
 
     /**
      * Write data to the terminal using ByteBuffer (more efficient for large data).
@@ -1186,8 +1204,7 @@ internal class TerminalEmulatorImpl(
         return 0
     }
 
-    override fun pushScrollbackLine(cols: Int, cells: Array<ScreenCell>, softWrapped: Boolean): Int =
-        pushScrollbackLine(cols, cells, softWrapped, scrollEndRow = -1)
+    override fun pushScrollbackLine(cols: Int, cells: Array<ScreenCell>, softWrapped: Boolean): Int = pushScrollbackLine(cols, cells, softWrapped, scrollEndRow = -1)
 
     override fun pushScrollbackLine(
         cols: Int,
@@ -1504,71 +1521,83 @@ internal class TerminalEmulatorImpl(
     }
 
     private fun processPendingUpdatesInner(): Unit = synchronized(rebuildLock) {
-        val useSharedPool = !rebuildInProgress
-        if (useSharedPool) {
-            rebuildInProgress = true
-        }
-        try {
-            // Collect pending changes
-            val damageRegions: List<DamageRegion>
-            val needsUpdate: Boolean
-            val movedRows: Set<Int>
-            val batchResizeGen: Long
-            val batchRows: Int
-            synchronized(damageLock) {
-                damageRegions = pendingDamageRegions.toList()
-                pendingDamageRegions.clear()
-                movedRows = movedSegmentRows.toSet()
-                movedSegmentRows.clear()
-                damagePosted = false
-                needsUpdate = damageRegions.isNotEmpty() || cursorMoved || propertyChanged
-                cursorMoved = false
-                propertyChanged = false
-                batchResizeGen = resizeGeneration
-                batchRows = rows
+        synchronized(configLock) {
+            if (closed) return
+            if (!terminalNativeDelegate.isInitialized()) {
+                val hasPending = synchronized(damageLock) {
+                    pendingDamageRegions.isNotEmpty() || cursorMoved || propertyChanged
+                }
+                if (!hasPending) return
             }
+            val native = terminalNative
+            synchronized(native) {
+                if (closed) return
+                val useSharedPool = !rebuildInProgress
+                if (useSharedPool) {
+                    rebuildInProgress = true
+                }
+                try {
+                    // Collect pending changes atomically under damageLock while holding
+                    // terminalNative, so no concurrent writeInput() on the SSH reader
+                    // thread can interleave mid-batch and splice two native terminal
+                    // states across rows or prematurely drain pendingSemanticSegments.
+                    val damageRegions: List<DamageRegion>
+                    val segmentsToApply: List<PendingSemanticSegment>
+                    val needsUpdate: Boolean
+                    val movedRows: Set<Int>
+                    val batchResizeGen: Long
+                    val batchRows: Int
+                    synchronized(damageLock) {
+                        damageRegions = pendingDamageRegions.toList()
+                        pendingDamageRegions.clear()
+                        segmentsToApply = pendingSemanticSegments.toList()
+                        pendingSemanticSegments.clear()
+                        movedRows = movedSegmentRows.toSet()
+                        movedSegmentRows.clear()
+                        damagePosted = false
+                        needsUpdate = damageRegions.isNotEmpty() || segmentsToApply.isNotEmpty() || cursorMoved || propertyChanged
+                        cursorMoved = false
+                        propertyChanged = false
+                        batchResizeGen = resizeGeneration
+                        batchRows = rows
+                    }
 
-            if (!needsUpdate) return@synchronized
+                    if (!needsUpdate) return
 
-            // Update damaged lines (safe to call getRowRuns now - not in callback)
-            val rebuiltRows = BooleanArray(batchRows.coerceAtLeast(0))
-            for (region in damageRegions) {
-                if (batchRows <= 0) break
-                // Ensure row is within bounds [0, batchRows)
-                val startRow = region.startRow.coerceIn(0, batchRows - 1)
-                val endRow = region.endRow.coerceIn(startRow, batchRows) // endRow is exclusive
-                for (row in startRow until endRow) {
-                    val applied = updateLine(
-                        row = row,
-                        damageRegion = region,
-                        preserveMovedSegments = row in movedRows,
-                        rebuiltRowsInBatch = rebuiltRows,
-                        expectedResizeGen = batchResizeGen,
-                        useSharedPool = useSharedPool,
-                    )
-                    if (applied && row in rebuiltRows.indices) {
-                        rebuiltRows[row] = true
+                    // Update damaged lines (safe to call getRowRuns now - not in callback)
+                    val rebuiltRows = BooleanArray(batchRows.coerceAtLeast(0))
+                    for (region in damageRegions) {
+                        if (batchRows <= 0) break
+                        // Ensure row is within bounds [0, batchRows)
+                        val startRow = region.startRow.coerceIn(0, batchRows - 1)
+                        val endRow = region.endRow.coerceIn(startRow, batchRows) // endRow is exclusive
+                        for (row in startRow until endRow) {
+                            val applied = updateLine(
+                                row = row,
+                                damageRegion = region,
+                                preserveMovedSegments = row in movedRows,
+                                rebuiltRowsInBatch = rebuiltRows,
+                                expectedResizeGen = batchResizeGen,
+                                useSharedPool = useSharedPool,
+                            )
+                            if (applied && row in rebuiltRows.indices) {
+                                rebuiltRows[row] = true
+                            }
+                        }
+                    }
+
+                    for (segment in segmentsToApply) {
+                        applySemanticSegment(segment)
+                    }
+
+                    // Build and emit new snapshot
+                    val newSnapshot = buildSnapshot()
+                    _snapshot.value = newSnapshot
+                } finally {
+                    if (useSharedPool) {
+                        rebuildInProgress = false
                     }
                 }
-            }
-
-            // Apply pending semantic segments now that text content is available
-            val segmentsToApply: List<PendingSemanticSegment>
-            synchronized(damageLock) {
-                segmentsToApply = pendingSemanticSegments.toList()
-                pendingSemanticSegments.clear()
-            }
-
-            for (segment in segmentsToApply) {
-                applySemanticSegment(segment)
-            }
-
-            // Build and emit new snapshot
-            val newSnapshot = buildSnapshot()
-            _snapshot.value = newSnapshot
-        } finally {
-            if (useSharedPool) {
-                rebuildInProgress = false
             }
         }
     }
@@ -1875,27 +1904,35 @@ internal class TerminalEmulatorImpl(
             snapSeq = sequenceNumber++
         }
 
-        val hasImages = imageStore.assets.isNotEmpty()
-        if (hasImages) imageStore.preparePlaceholders(lines, scrollbackCopy)
+        val resolvedLines: List<TerminalLine>
+        val resolvedScrollback: List<TerminalLine>
+        synchronized(damageLock) {
+            synchronized(imageStore) {
+                val hasImages = imageStore.assets.isNotEmpty()
+                if (hasImages) imageStore.preparePlaceholders(lines, scrollbackCopy)
+                resolvedLines = if (!hasImages) {
+                    lines
+                } else {
+                    lines.mapIndexed { row, line ->
+                        val images = (imageStore.slices(row) + imageStore.placeholders(line.cells))
+                            .sortedWith(compareBy<ImageSlice> { it.z }.thenBy { it.asset.id })
+                        if (images.isEmpty()) line else line.copy(images = images)
+                    }
+                }
+                resolvedScrollback = if (!hasImages) {
+                    scrollbackCopy
+                } else {
+                    scrollbackCopy.mapIndexed { row, line ->
+                        val images = imageStore.slices(row - scrollbackCopy.size, false) +
+                            imageStore.placeholders(line.cells)
+                        if (images.isEmpty()) line else line.copy(images = images)
+                    }
+                }
+            }
+        }
         return TerminalSnapshot(
-            lines = if (!hasImages) {
-                lines
-            } else {
-                lines.mapIndexed { row, line ->
-                    val images = (imageStore.slices(row) + imageStore.placeholders(line.cells))
-                        .sortedWith(compareBy<ImageSlice> { it.z }.thenBy { it.asset.id })
-                    if (images.isEmpty()) line else line.copy(images = images)
-                }
-            },
-            scrollback = if (!hasImages) {
-                scrollbackCopy
-            } else {
-                scrollbackCopy.mapIndexed { row, line ->
-                    val images = imageStore.slices(row - scrollbackCopy.size, false) +
-                        imageStore.placeholders(line.cells)
-                    if (images.isEmpty()) line else line.copy(images = images)
-                }
-            },
+            lines = resolvedLines,
+            scrollback = resolvedScrollback,
             cursorRow = snapCursorRow,
             cursorCol = snapCursorCol,
             cursorVisible = snapCursorVisible,
@@ -2232,6 +2269,7 @@ internal class TerminalEmulatorImpl(
 
     companion object {
         private const val MAX_URL_SCAN_CONTINUATION_ROWS = 6
+        private val EMPTY_INT_ARRAY = IntArray(0)
     }
 }
 

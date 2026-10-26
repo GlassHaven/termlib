@@ -16,6 +16,9 @@ object FontWidthProfiler {
 
     private val cache = ConcurrentHashMap<Typeface, IntArray>()
 
+    @Volatile
+    internal var lastProfiledCodepoints: IntArray? = null
+
     // Intervals of East Asian Ambiguous characters from Markus Kuhn's table (excluding PUA)
     private val AMBIGUOUS_INTERVALS = intArrayOf(
         0x00A1, 0x00A1, 0x00A4, 0x00A4, 0x00A7, 0x00A8,
@@ -68,7 +71,7 @@ object FontWidthProfiler {
         0x261C, 0x261C, 0x261E, 0x261E, 0x2640, 0x2640,
         0x2642, 0x2642, 0x2660, 0x2661, 0x2663, 0x2665,
         0x2667, 0x266A, 0x266C, 0x266D, 0x266F, 0x266F,
-        0x273D, 0x273D, 0x2776, 0x277F
+        0x273D, 0x273D, 0x2776, 0x277F,
     )
 
     /**
@@ -80,7 +83,10 @@ object FontWidthProfiler {
      * @return Sorted array of double-width codepoints
      */
     fun profile(typeface: Typeface, thresholdRatio: Float = 1.35f): IntArray {
-        cache[typeface]?.let { return it }
+        cache[typeface]?.let {
+            lastProfiledCodepoints = it
+            return it
+        }
 
         val paint = Paint().apply {
             this.typeface = typeface
@@ -107,6 +113,7 @@ object FontWidthProfiler {
         val result = wideList.toIntArray()
         result.sort()
         cache[typeface] = result
+        lastProfiledCodepoints = result
         return result
     }
 
@@ -137,5 +144,6 @@ object FontWidthProfiler {
      */
     fun clearCache() {
         cache.clear()
+        lastProfiledCodepoints = null
     }
 }
