@@ -1336,12 +1336,23 @@ internal class TerminalEmulatorImpl(
                 }
                 if (chunkStartIdx > 0) {
                     scrollback.add(
-                        line.copy(
+                        TerminalLine(
+                            row = line.row,
                             cells = contentCells.subList(0, chunkStartIdx).toList(),
+                            lastModified = line.lastModified,
+                            semanticSegments = line.semanticSegments,
                             softWrapped = (prevChunkCols == cols),
+                            images = line.images,
                         ),
                     )
-                    line = line.copy(cells = contentCells.subList(chunkStartIdx, contentCells.size).toList())
+                    line = TerminalLine(
+                        row = line.row,
+                        cells = contentCells.subList(chunkStartIdx, contentCells.size).toList(),
+                        lastModified = line.lastModified,
+                        semanticSegments = line.semanticSegments,
+                        softWrapped = line.softWrapped,
+                        images = line.images,
+                    )
                 }
             }
             poppedSoftWrapped = line.softWrapped
@@ -1616,8 +1627,8 @@ internal class TerminalEmulatorImpl(
 
         val line = currentLines[row]
         if (segment.semanticType == SemanticType.HYPERLINK) {
-            if (!isValidCellRange(segment.startCol, segment.endCol, line.cells.size)) return@synchronized
-            val linkedText = cellText(line.cells, segment.startCol, segment.endCol)
+            if (!isValidCellRange(segment.startCol, segment.endCol, line.cellCount)) return@synchronized
+            val linkedText = cellText(line.runs, segment.startCol, segment.endCol)
             if (linkedText.all { it == '\u0000' || it.isWhitespace() }) return@synchronized
         }
 
@@ -1647,6 +1658,123 @@ internal class TerminalEmulatorImpl(
     }
 
     /**
+     * Convert one native [CellRun] (already a style run from libvterm) into
+     * the compact [LineRun] storage directly, without materializing per-cell
+     * objects. Cell boundaries are reconstructed from libvterm's per-cell
+     * UTF-16 length and display width captured under mLock, so pooled char
+     * array tails and ICU/libvterm Unicode property differences can never
+     * shift cell boundaries.
+     */
+    private fun cellRunToLineRun(cellRun: CellRun): LineRun {
+        val style = RunStyle.fromComponents(
+            fgRed = cellRun.fgRed,
+            fgGreen = cellRun.fgGreen,
+            fgBlue = cellRun.fgBlue,
+            bgRed = cellRun.bgRed,
+            bgGreen = cellRun.bgGreen,
+            bgBlue = cellRun.bgBlue,
+            bold = cellRun.bold,
+            italic = cellRun.italic,
+            underline = cellRun.underline,
+            blink = cellRun.blink,
+            reverse = cellRun.reverse,
+            strike = cellRun.strike,
+        )
+        val cellCount = cellRun.cellCount
+
+        if (cellCount > 0) {
+            val sb = StringBuilder(cellCount)
+            val w = ByteArray(cellCount)
+            val comb: Array<List<Char>?> = arrayOfNulls(cellCount)
+            var anyWide = false
+            var anyCombining = false
+            var charIndex = 0
+            for (cellIdx in 0 until cellCount) {
+                val meta = cellRun.cellMeta[cellIdx].toInt() and 0xFF
+                val cellUtf16Len = meta and 0x3F
+                val width = (meta ushr 6).coerceIn(1, 2)
+                if (cellUtf16Len <= 0 || charIndex + cellUtf16Len > cellRun.chars.size) break
+
+                sb.append(cellRun.chars[charIndex])
+                if (cellUtf16Len > 1) {
+                    val list = ArrayList<Char>(cellUtf16Len - 1)
+                    for (k in 1 until cellUtf16Len) {
+                        list.add(cellRun.chars[charIndex + k])
+                    }
+                    comb[cellIdx] = list
+                    anyCombining = true
+                }
+                charIndex += cellUtf16Len
+
+                w[cellIdx] = width.toByte()
+                if (width == 2) anyWide = true
+            }
+            return LineRun(
+                text = sb.toString(),
+                style = style,
+                widths = if (anyWide) w else null,
+                combining = if (anyCombining) comb.map { it ?: TerminalLine.EMPTY_COMBINING_CHARS } else null,
+                imageId = cellRun.imageId.toLong(),
+                placementId = cellRun.placementId.toLong(),
+            )
+        }
+
+        // Legacy path without per-cell metadata (cellCount == 0): walk the
+        // char stream and derive combining chars and widths ourselves.
+        val sb = StringBuilder()
+        val w = ArrayList<Byte>()
+        val comb: ArrayList<List<Char>?> = ArrayList()
+        var anyWide = false
+        var anyCombining = false
+        var charIndex = 0
+        while (charIndex < cellRun.chars.size) {
+            val char = cellRun.chars[charIndex]
+            if (char == 0.toChar()) break
+
+            var combiningChars: MutableList<Char>? = null
+            charIndex++
+
+            if (char.isHighSurrogate() && charIndex < cellRun.chars.size) {
+                val nextChar = cellRun.chars[charIndex]
+                if (nextChar.isLowSurrogate()) {
+                    combiningChars = mutableListOf(nextChar)
+                    charIndex++
+                }
+            }
+
+            while (charIndex < cellRun.chars.size && isCombiningCharacter(cellRun.chars[charIndex])) {
+                if (combiningChars == null) {
+                    combiningChars = mutableListOf()
+                }
+                combiningChars.add(cellRun.chars[charIndex])
+                charIndex++
+            }
+
+            val extraChars = combiningChars ?: TerminalLine.EMPTY_COMBINING_CHARS
+            val width = if (extraChars.isNotEmpty() && extraChars[0].isLowSurrogate()) {
+                val codepoint = Character.toCodePoint(char, extraChars[0])
+                if (isFullwidthCodepoint(codepoint)) 2 else 1
+            } else {
+                if (isFullwidthCharacter(char)) 2 else 1
+            }
+
+            sb.append(char)
+            w.add(width.toByte())
+            comb.add(extraChars)
+            if (width == 2) anyWide = true
+            if (extraChars.isNotEmpty()) anyCombining = true
+        }
+        return LineRun(
+            text = sb.toString(),
+            style = style,
+            widths = if (anyWide) w.toByteArray() else null,
+            combining = if (anyCombining) comb.map { it ?: TerminalLine.EMPTY_COMBINING_CHARS } else null,
+            imageId = cellRun.imageId.toLong(),
+            placementId = cellRun.placementId.toLong(),
+        )
+    }
+
+    /**
      * Update a single line by fetching cell data from the terminal.
      */
     private fun updateLine(
@@ -1670,8 +1798,8 @@ internal class TerminalEmulatorImpl(
             currentDefaultBg = currentDefaultBackground
         }
 
-        val cells = ArrayList<TerminalLine.Cell>(localCols)
-        val runs = acquireRowRunPool(localCols, useSharedPool)
+        val lineRuns = ArrayList<LineRun>(4)
+        val rowRuns = acquireRowRunPool(localCols, useSharedPool)
 
         // #749: fetch the whole row in ONE native call. The previous loop
         // called getCellRun() once per style run, each call taking and
@@ -1685,7 +1813,7 @@ internal class TerminalEmulatorImpl(
         // write is either fully before the fetch (its damage was drained
         // with this batch) or fully after (its damage re-damages and
         // rebuilds this row again). The row is never a mix of two states.
-        val packedRuns = terminalNative.getRowRuns(row, runs)
+        val packedRuns = terminalNative.getRowRuns(row, rowRuns)
         val fetchedRuns = packedRuns and TerminalNative.ROW_RUNS_COUNT_MASK
         val thisRowContinuation = (packedRuns and TerminalNative.ROW_RUNS_THIS_CONT_BIT) != 0
         val softWrapped = (packedRuns and TerminalNative.ROW_RUNS_NEXT_CONT_BIT) != 0
@@ -1698,132 +1826,49 @@ internal class TerminalEmulatorImpl(
 
         var col = 0
         for (i in 0 until fetchedRuns) {
-            val cellRun = runs[i]
+            val cellRun = rowRuns[i]
             val runLength = cellRun.runLength
-
-            // Convert CellRun colors to Compose Color
-            val fgColor = Color(cellRun.fgRed, cellRun.fgGreen, cellRun.fgBlue)
-            val bgColor = Color(cellRun.bgRed, cellRun.bgGreen, cellRun.bgBlue)
-
-            // Reconstruct cells directly from libvterm's per-cell UTF-16 length and
-            // display width captured under mLock, so pooled char array tails and
-            // ICU/libvterm Unicode property differences can never shift cell boundaries.
-            var charIndex = 0
-            var cellsInRun = 0
-            val cellCount = cellRun.cellCount
-
-            if (cellCount > 0) {
-                for (cellIdx in 0 until cellCount) {
-                    val meta = cellRun.cellMeta[cellIdx].toInt() and 0xFF
-                    val cellUtf16Len = meta and 0x3F
-                    val width = (meta ushr 6).coerceIn(1, 2)
-                    if (cellUtf16Len <= 0 || charIndex + cellUtf16Len > cellRun.chars.size) break
-
-                    val char = cellRun.chars[charIndex]
-                    val extraChars = if (cellUtf16Len == 1) {
-                        TerminalLine.EMPTY_COMBINING_CHARS
-                    } else {
-                        val list = ArrayList<Char>(cellUtf16Len - 1)
-                        for (k in 1 until cellUtf16Len) {
-                            list.add(cellRun.chars[charIndex + k])
-                        }
-                        list
-                    }
-                    charIndex += cellUtf16Len
-
-                    cells.add(
-                        TerminalLine.Cell(
-                            char = char,
-                            combiningChars = extraChars,
-                            fgColor = fgColor,
-                            bgColor = bgColor,
-                            bold = cellRun.bold,
-                            italic = cellRun.italic,
-                            underline = cellRun.underline,
-                            blink = cellRun.blink,
-                            reverse = cellRun.reverse,
-                            strike = cellRun.strike,
-                            width = width,
-                            // #583: placeholder runs are isolated, so the run-level ids
-                            // belong to this single cell.
-                            imageId = cellRun.imageId.toLong(),
-                            placementId = cellRun.placementId.toLong(),
-                        ),
-                    )
-                    cellsInRun += width
-                }
-            } else {
-                while (charIndex < cellRun.chars.size && cellsInRun < runLength) {
-                    val char = cellRun.chars[charIndex]
-                    if (char == 0.toChar()) break
-
-                    var combiningChars: MutableList<Char>? = null
-                    charIndex++
-
-                    if (char.isHighSurrogate() && charIndex < cellRun.chars.size) {
-                        val nextChar = cellRun.chars[charIndex]
-                        if (nextChar.isLowSurrogate()) {
-                            combiningChars = mutableListOf(nextChar)
-                            charIndex++
-                        }
-                    }
-
-                    while (charIndex < cellRun.chars.size && isCombiningCharacter(cellRun.chars[charIndex])) {
-                        if (combiningChars == null) {
-                            combiningChars = mutableListOf()
-                        }
-                        combiningChars.add(cellRun.chars[charIndex])
-                        charIndex++
-                    }
-
-                    val extraChars = combiningChars ?: TerminalLine.EMPTY_COMBINING_CHARS
-                    val width = if (extraChars.isNotEmpty() && extraChars[0].isLowSurrogate()) {
-                        val codepoint = Character.toCodePoint(char, extraChars[0])
-                        if (isFullwidthCodepoint(codepoint)) 2 else 1
-                    } else {
-                        if (isFullwidthCharacter(char)) 2 else 1
-                    }
-
-                    cells.add(
-                        TerminalLine.Cell(
-                            char = char,
-                            combiningChars = extraChars,
-                            fgColor = fgColor,
-                            bgColor = bgColor,
-                            bold = cellRun.bold,
-                            italic = cellRun.italic,
-                            underline = cellRun.underline,
-                            blink = cellRun.blink,
-                            reverse = cellRun.reverse,
-                            strike = cellRun.strike,
-                            width = width,
-                            imageId = cellRun.imageId.toLong(),
-                            placementId = cellRun.placementId.toLong(),
-                        ),
-                    )
-
-                    cellsInRun++
-                    if (width == 2) {
-                        cellsInRun++
-                    }
-                }
-            }
-
-            col += cellsInRun
+            val lineRun = cellRunToLineRun(cellRun)
+            lineRuns.add(lineRun)
+            col += runLength
         }
 
         // A run shorter than the row means the native fetch stopped early
         // (defensive: it should always cover the full row). Fill the tail
         // with blanks so the cached line is always exactly `localCols` wide.
-        while (col < localCols) {
-            cells.add(
-                TerminalLine.Cell(
-                    char = ' ',
-                    fgColor = currentDefaultFg,
-                    bgColor = currentDefaultBg,
-                ),
+        if (col < localCols) {
+            val tailStyle = RunStyle.fromComponents(
+                fgRed = (currentDefaultFg.red * 255).toInt(),
+                fgGreen = (currentDefaultFg.green * 255).toInt(),
+                fgBlue = (currentDefaultFg.blue * 255).toInt(),
+                bgRed = (currentDefaultBg.red * 255).toInt(),
+                bgGreen = (currentDefaultBg.green * 255).toInt(),
+                bgBlue = (currentDefaultBg.blue * 255).toInt(),
+                bold = false,
+                italic = false,
+                underline = 0,
+                blink = false,
+                reverse = false,
+                strike = false,
             )
-            col++
+            val tail = LineRun(
+                text = String(CharArray(localCols - col) { ' ' }),
+                style = tailStyle,
+            )
+            // Merge the tail into the preceding run when the styles match.
+            val last = lineRuns.lastOrNull()
+            if (last != null && last.style == tail.style && last.widths == null &&
+                last.combining == null && tail.widths == null && tail.combining == null
+            ) {
+                lineRuns[lineRuns.size - 1] = LineRun(
+                    text = last.text + tail.text,
+                    style = last.style,
+                    imageId = last.imageId,
+                    placementId = last.placementId,
+                )
+            } else {
+                lineRuns.add(tail)
+            }
         }
 
         // Update cached line, preserving existing semantic segments only when they
@@ -1843,17 +1888,17 @@ internal class TerminalEmulatorImpl(
                 val existingSegments = previousLine.semanticSegments
                 val preservedSegments = if (damageRegion.preserveSegments || preserveMovedSegments) {
                     existingSegments.filter { segment ->
-                        segment.endCol <= cells.size &&
-                            (!preserveMovedSegments || segmentTextStillMatches(row, segment, cells))
+                        segment.endCol <= localCols &&
+                            (!preserveMovedSegments || segmentTextStillMatches(row, segment, lineRuns))
                     }
                 } else {
                     existingSegments.filter { segment ->
-                        segment.endCol <= cells.size &&
+                        segment.endCol <= localCols &&
                             !segment.overlaps(damageRegion.startCol, damageRegion.endCol)
                     }
                 }
                 replaceStoredSegmentTexts(row, preservedSegments)
-                this[row] = TerminalLine(row, cells, softWrapped = softWrapped, semanticSegments = preservedSegments)
+                this[row] = TerminalLine(row, lineRuns, softWrapped = softWrapped, semanticSegments = preservedSegments)
                 if (row > 0 && row - 1 < size && (rebuiltRowsInBatch == null || row - 1 !in rebuiltRowsInBatch.indices || !rebuiltRowsInBatch[row - 1])) {
                     val prevRowLine = this[row - 1]
                     if (prevRowLine.softWrapped != thisRowContinuation) {
@@ -2220,26 +2265,42 @@ internal class TerminalEmulatorImpl(
 
     private fun storeSegmentText(row: Int, segment: SemanticSegment, line: TerminalLine) {
         synchronized(damageLock) {
-            if (!isValidCellRange(segment.startCol, segment.endCol, line.cells.size)) return@synchronized
-            semanticSegmentTexts[SemanticSegmentKey(row, segment)] = cellText(line.cells, segment.startCol, segment.endCol)
+            if (!isValidCellRange(segment.startCol, segment.endCol, line.cellCount)) return@synchronized
+            semanticSegmentTexts[SemanticSegmentKey(row, segment)] = cellText(line.runs, segment.startCol, segment.endCol)
         }
     }
 
-    private fun segmentTextStillMatches(row: Int, segment: SemanticSegment, cells: List<TerminalLine.Cell>): Boolean {
+    private fun segmentTextStillMatches(row: Int, segment: SemanticSegment, runs: List<LineRun>): Boolean {
         return synchronized(damageLock) {
             val expected = semanticSegmentTexts[SemanticSegmentKey(row, segment)] ?: return@synchronized true
-            if (!isValidCellRange(segment.startCol, segment.endCol, cells.size)) return@synchronized false
-            val actual = cellText(cells, segment.startCol, segment.endCol)
+            val cellCount = runs.sumOf { it.cellCount }
+            if (!isValidCellRange(segment.startCol, segment.endCol, cellCount)) return@synchronized false
+            val actual = cellText(runs, segment.startCol, segment.endCol)
             actual == expected
         }
     }
 
     private fun isValidCellRange(startCol: Int, endCol: Int, cellCount: Int): Boolean = startCol >= 0 && endCol >= startCol && endCol <= cellCount
 
-    private fun cellText(cells: List<TerminalLine.Cell>, startCol: Int, endCol: Int): String = buildString {
-        for (col in startCol until endCol) {
-            append(cells[col].char)
-            cells[col].combiningChars.forEach { append(it) }
+    private fun cellText(runs: List<LineRun>, startCol: Int, endCol: Int): String = buildString {
+        var offset = 0
+        for (run in runs) {
+            val n = run.cellCount
+            if (offset + n <= startCol) {
+                offset += n
+                continue
+            }
+            val runStart = (startCol - offset).coerceAtLeast(0)
+            val runEnd = (endCol - offset).coerceAtMost(n)
+            if (runStart >= runEnd) {
+                offset += n
+                continue
+            }
+            for (i in runStart until runEnd) {
+                append(run.text[i])
+                run.combiningAt(i).forEach { append(it) }
+            }
+            offset += n
         }
     }
 

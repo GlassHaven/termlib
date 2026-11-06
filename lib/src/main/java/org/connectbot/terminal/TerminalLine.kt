@@ -24,11 +24,16 @@ import androidx.compose.ui.graphics.Color
  *
  * Each line is immutable and tracks its last modification time for efficient redraws.
  * This is part of the architecture where each terminal line is a separate Kotlin class.
+ *
+ * Storage is run-compressed: cells with identical formatting share one [LineRun]
+ * instead of one [Cell] object per column (see [LineRun] for the memory math).
+ * The legacy [cells] constructor remains for callers/tests that think per-cell;
+ * it converts eagerly and groups adjacent same-style cells into runs.
  */
 @Immutable
-internal data class TerminalLine(
+internal class TerminalLine(
     val row: Int,
-    val cells: List<Cell>,
+    val runs: List<LineRun>,
     val lastModified: Long = System.nanoTime(),
     val semanticSegments: List<SemanticSegment> = emptyList(),
     /**
@@ -45,18 +50,77 @@ internal data class TerminalLine(
     val images: List<ImageSlice> = emptyList(),
 ) {
     /**
+     * Legacy per-cell factory: converts [cells] to runs, grouping adjacent
+     * cells whose style renders identically. Content is preserved byte-for-byte.
+     * Declared as a companion `invoke` so `TerminalLine(row = …, cells = …)`
+     * call sites keep working with named arguments.
+     */
+
+    /**
+     * Structural copy (replaces the compiler-generated data-class copy()).
+     */
+    fun copy(
+        row: Int = this.row,
+        runs: List<LineRun> = this.runs,
+        lastModified: Long = this.lastModified,
+        semanticSegments: List<SemanticSegment> = this.semanticSegments,
+        softWrapped: Boolean = this.softWrapped,
+        images: List<ImageSlice> = this.images,
+    ): TerminalLine = TerminalLine(row, runs, lastModified, semanticSegments, softWrapped, images)
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is TerminalLine) return false
+        return row == other.row &&
+            runs == other.runs &&
+            lastModified == other.lastModified &&
+            semanticSegments == other.semanticSegments &&
+            softWrapped == other.softWrapped &&
+            images == other.images
+    }
+
+    override fun hashCode(): Int {
+        var result = row
+        result = 31 * result + runs.hashCode()
+        result = 31 * result + lastModified.hashCode()
+        result = 31 * result + semanticSegments.hashCode()
+        result = 31 * result + softWrapped.hashCode()
+        result = 31 * result + images.hashCode()
+        return result
+    }
+
+    override fun toString(): String =
+        "TerminalLine(row=$row, runs=${runs.size}, softWrapped=$softWrapped, images=${images.size})"
+
+    /** Number of cells (columns) in this line. */
+    val cellCount: Int by lazy {
+        var n = 0
+        for (r in runs) n += r.cellCount
+        n
+    }
+
+    /**
+     * Legacy per-cell view of this line, materialized on first access and
+     * cached. Bulk storage stays run-compressed; consumers that still speak
+     * per-cell (selection, accessibility, resize paths) pay the expansion
+     * only when they actually touch the line — the render hot path iterates
+     * [runs] directly and never triggers this.
+     */
+    val cells: List<Cell> by lazy { materializeCells() }
+
+    /**
      * Get the text content of this line as a string.
      */
     val text: String by lazy {
         buildString {
-            cells.forEach { cell ->
-                if (cell.isImagePlaceholder) {
-                    // Inline-image placeholder cells (#583) draw an image over
-                    // this column; the underlying marker glyph is not content.
-                    append(' ')
-                } else {
-                    append(cell.char)
-                    cell.combiningChars.forEach { append(it) }
+            runs.forEach { run ->
+                for (i in run.text.indices) {
+                    if (run.isImagePlaceholderAt(i)) {
+                        append(' ')
+                    } else {
+                        append(run.text[i])
+                        run.combiningAt(i).forEach { append(it) }
+                    }
                 }
             }
         }
@@ -71,8 +135,10 @@ internal data class TerminalLine(
      */
     internal val columnText: String by lazy {
         buildString {
-            cells.forEach { cell ->
-                append(if (cell.isImagePlaceholder) ' ' else cell.char)
+            runs.forEach { run ->
+                for (i in run.text.indices) {
+                    append(if (run.isImagePlaceholderAt(i)) ' ' else run.text[i])
+                }
             }
         }
     }
@@ -95,12 +161,51 @@ internal data class TerminalLine(
     fun hasPrompt(): Boolean = semanticSegments.any { it.semanticType == SemanticType.PROMPT }
 
     /**
+     * Materialize the cell at column [col] in the legacy per-cell model.
+     * Intended for consumers that still speak cells (selection, accessibility).
+     * Returns null when [col] is outside the line.
+     */
+    fun getCellAt(col: Int): Cell? {
+        if (col < 0) return null
+        var offset = 0
+        for (run in runs) {
+            val n = run.cellCount
+            if (col < offset + n) {
+                return run.cellAt(col - offset)
+            }
+            offset += n
+        }
+        return null
+    }
+
+    /**
+     * Display width (1 or 2) of the cell at column [col]; 1 when out of range.
+     */
+    fun widthAt(col: Int): Int {
+        if (col < 0) return 1
+        var offset = 0
+        for (run in runs) {
+            val n = run.cellCount
+            if (col < offset + n) return run.widthAt(col - offset)
+            offset += n
+        }
+        return 1
+    }
+
+    /**
+     * Iterate this line's runs.
+     */
+    fun forEachRun(block: (LineRun) -> Unit) {
+        runs.forEach(block)
+    }
+
+    /**
      * Auto-detected URLs in the line text (not from OSC 8 semanticSegments).
      * Lazily computed and cached per TerminalLine instance.
      * Each triple is (startCol, endColExclusive, url).
      */
     internal val autoDetectedUrls: List<Triple<Int, Int, String>> by lazy {
-        if (cells.isEmpty()) return@lazy emptyList()
+        if (cellCount == 0) return@lazy emptyList()
         URL_REGEX.findAll(columnText).mapNotNull { match ->
             val trimmed = match.value.trimDetectedUrl()
             if (trimmed.isEmpty()) {
@@ -140,6 +245,8 @@ internal data class TerminalLine(
 
     /**
      * A single cell in the terminal line with character and formatting.
+     * Retained as the per-cell materialized view (and legacy construction API);
+     * bulk storage uses [LineRun].
      */
     @Immutable
     data class Cell(
@@ -163,6 +270,26 @@ internal data class TerminalLine(
     )
 
     companion object {
+        /**
+         * Legacy per-cell factory: `TerminalLine(row = …, cells = …)` with
+         * named arguments resolves to this invoke when no constructor matches.
+         */
+        operator fun invoke(
+            row: Int,
+            cells: List<Cell>,
+            lastModified: Long = System.nanoTime(),
+            semanticSegments: List<SemanticSegment> = emptyList(),
+            softWrapped: Boolean = false,
+            images: List<ImageSlice> = emptyList(),
+        ): TerminalLine = TerminalLine(
+            row = row,
+            runs = packCells(cells),
+            lastModified = lastModified,
+            semanticSegments = semanticSegments,
+            softWrapped = softWrapped,
+            images = images,
+        )
+
         /**
          * Shared empty list to avoid allocation for 99% of cells without combining chars.
          * This single shared instance prevents ~1,920 empty list allocations per frame.
@@ -200,17 +327,52 @@ internal data class TerminalLine(
         /**
          * Create an empty line with default cells.
          */
-        fun empty(row: Int, cols: Int, defaultFg: Color = Color.White, defaultBg: Color = Color.Black): TerminalLine = TerminalLine(
-            row = row,
-            cells = List(cols) {
+        fun empty(row: Int, cols: Int, defaultFg: Color = Color.White, defaultBg: Color = Color.Black): TerminalLine {
+            val style = RunStyle.fromCell(
                 Cell(
                     char = '\u0000',
                     fgColor = defaultFg,
                     bgColor = defaultBg,
-                )
-            },
-            softWrapped = false,
-        )
+                ),
+            )
+            val run = LineRun(
+                text = String(CharArray(cols) { '\u0000' }),
+                style = style,
+            )
+            return TerminalLine(row = row, runs = listOf(run), softWrapped = false)
+        }
+
+        /**
+         * Pack a per-cell list into runs, grouping adjacent cells with an
+         * identical render style. Content is preserved byte-for-byte.
+         */
+        private fun packCells(cells: List<Cell>): List<LineRun> {
+            if (cells.isEmpty()) return emptyList()
+            val out = ArrayList<LineRun>(4)
+            var groupStart = 0
+            var groupStyle = RunStyle.fromCell(cells[0])
+            for (i in 1 until cells.size) {
+                if (!groupStyle.matches(cells[i])) {
+                    out.add(LineRun.fromCells(cells.subList(groupStart, i)))
+                    groupStart = i
+                    groupStyle = RunStyle.fromCell(cells[i])
+                }
+            }
+            out.add(LineRun.fromCells(cells.subList(groupStart, cells.size)))
+            return out
+        }
+    }
+
+    /** Expand runs back into the per-cell model (used by the lazy [cells] view). */
+    private fun materializeCells(): List<Cell> {
+        if (runs.isEmpty()) return emptyList()
+        val out = ArrayList<Cell>(cellCount)
+        for (run in runs) {
+            for (i in run.text.indices) {
+                out.add(run.cellAt(i))
+            }
+        }
+        return out
     }
 }
 
@@ -222,3 +384,14 @@ internal data class TerminalLine(
  */
 internal val TerminalLine.Cell.isImagePlaceholder: Boolean
     get() = char == '\uDBFB' && combiningChars.firstOrNull() == '\uDEEE'
+
+/**
+ * True when the cell at [index] inside this run is a Kitty unicode placeholder
+ * (#583). Mirror of [TerminalLine.Cell.isImagePlaceholder] for run storage.
+ */
+internal fun LineRun.isImagePlaceholderAt(index: Int): Boolean {
+    if (text[index] != '\uDBFB') return false
+    val c = combining
+    if (c == null) return false
+    return c[index].firstOrNull() == '\uDEEE'
+}
