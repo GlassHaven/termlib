@@ -599,4 +599,48 @@ class HavenUrlRegressionTest {
             state.getHyperlinkUrlAt(row = 1, col = 10, autoDetectUrls = true),
         )
     }
+
+    /**
+     * Haven #791: when the terminal prints a URL followed by an explicit
+     * newline and a new unindented line starting with a slash path at column 0
+     * (e.g. `https://example.com\n/1`), clicking the URL must open
+     * `https://example.com` rather than `https://example.com/1`, and clicking
+     * `/1` on the next row must not resolve as a link.
+     */
+    @Test
+    fun `spec_unindented_slash_line_after_short_url_row_is_not_continuation`() {
+        val state = screenState(
+            80,
+            "https://example.com",
+            "/1",
+        )
+        assertEquals(
+            "https://example.com",
+            state.getHyperlinkUrlAt(row = 0, col = 5, autoDetectUrls = true),
+        )
+        assertNull(state.getHyperlinkUrlAt(row = 1, col = 0, autoDetectUrls = true))
+        assertNull(state.getHyperlinkUrlAt(row = 1, col = 1, autoDetectUrls = true))
+
+        val trailingSlashState = screenState(
+            80,
+            "https://example.com/",
+            "/1",
+        )
+        assertEquals(
+            "https://example.com/",
+            trailingSlashState.getHyperlinkUrlAt(row = 0, col = 5, autoDetectUrls = true),
+        )
+        assertNull(trailingSlashState.getHyperlinkUrlAt(row = 1, col = 0, autoDetectUrls = true))
+
+        val plainWordState = screenState(
+            80,
+            "https://example.com",
+            "foo",
+        )
+        assertEquals(
+            "https://example.com",
+            plainWordState.getHyperlinkUrlAt(row = 0, col = 5, autoDetectUrls = true),
+        )
+        assertNull(plainWordState.getHyperlinkUrlAt(row = 1, col = 0, autoDetectUrls = true))
+    }
 }

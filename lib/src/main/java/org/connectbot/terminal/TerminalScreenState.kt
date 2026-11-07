@@ -337,7 +337,9 @@ internal class TerminalScreenState(
         // not be joined even when the first row runs to the right margin.
         if (run.contains("://")) return null
 
-        val prevEndsWithDelimiter = previousEndCol > 0 && previousText[previousEndCol - 1] in "/?&=#"
+        val prevEndsWithDelimiter = previousEndCol > 0 &&
+            previousText[previousEndCol - 1] in "/?&=#" &&
+            !(previousText[previousEndCol - 1] == '/' && run.startsWith('/'))
         val nextStartsWithQueryOrFragment = run.isNotEmpty() && run[0] in "?&#"
         val previousRun = previousText.substring(0, previousEndCol)
         val previousWouldTrim = previousRun.trimDetectedUrl().length < previousRun.length

@@ -292,6 +292,12 @@ internal class UrlBlobDetector(private val state: TerminalScreenState) {
         // requirement.
         if (prevUrlEnd == cols - 1) return curStart
 
+        // Non-margin wrap: if the URL on prevRow did not reach the right
+        // edge (or right frame boundary) because other text followed it on
+        // the same row, it ended mid-line and cannot wrap onto curRow.
+        val prevCutOff = (prevUrlEnd + 1 until rightFrame).all { cellChar[prevRow][it].isWhitespace() }
+        if (!prevCutOff) return null
+
         // URL-structural signal required for the non-margin cases: the
         // continuation's first URL-safe run must contain any of `/#?&=` —
         // i.e. a path separator, fragment marker, or query structure. Any
@@ -312,6 +318,30 @@ internal class UrlBlobDetector(private val state: TerminalScreenState) {
             runEnd++
         }
         if (sawStructural && !sawAlnum) sawStructural = false
+
+        val runLen = runEnd - curStart
+        val roomOnPrevRow = cols - (prevUrlEnd + 1)
+        val inFrame = leftFrame >= 0 || rightFrame < cols
+
+        // Haven #791: when curRow starts at column 0 with no leading
+        // indentation, prefix decoration, or structural frame, and the URL
+        // run on curRow would have fitted in the remaining columns of
+        // prevRow, nothing forced a line wrap — the line break was an
+        // explicit newline (`https://example.com\n/1`). Only accept such a
+        // short unindented row at col 0 when prevRow ended with an
+        // incomplete URL delimiter (`/?&=#`, excluding `//` across the
+        // newline) or curRow starts with a query/fragment marker (`?&#`).
+        if (!inFrame && curStart == 0 && runLen <= roomOnPrevRow) {
+            val prevLastChar = cellChar[prevRow][prevUrlEnd]
+            val curFirstChar = cellChar[curRow][curStart]
+            val prevEndsWithDelimiter = prevLastChar in "/?&=#" &&
+                !(prevLastChar == '/' && curFirstChar == '/')
+            val nextStartsWithQueryOrFragment = curFirstChar in "?&#"
+            if (!prevEndsWithDelimiter && !nextStartsWithQueryOrFragment) {
+                return null
+            }
+        }
+
         if (!sawStructural) {
             // Fallback for slash-less wrap tails: a short URL-safe run alone on
             // an otherwise-blank line is the shape of a hanging-indent wrap
@@ -319,8 +349,8 @@ internal class UrlBlobDetector(private val state: TerminalScreenState) {
             // across lines, where the fragment carries no /#?&= of its own).
             // Indented prose is excluded — it carries more words, so the rest
             // of the line is not blank.
-            val runLen = runEnd - curStart
             val restBlank = (runEnd until cols).all { cellChar[curRow][it].isWhitespace() }
+            val hangingIndentTail = curStart > 0 && restBlank && runLen in 1..(cols / 2)
             // Second fallback, for a break inside a filename with prose
             // following it on the same row — the shape above requires the tail
             // to sit alone on its line, which a wrapped paragraph never does.
@@ -334,11 +364,9 @@ internal class UrlBlobDetector(private val state: TerminalScreenState) {
             // thought. Without that second gate this glued real output
             // together — `…/foo/bar` above `README.md and 3 other files`
             // became `…/foo/barREADME.md`.
-            val prevCutOff = (prevUrlEnd + 1 until cols).all { cellChar[prevRow][it].isWhitespace() }
-            val roomOnPrevRow = cols - (prevUrlEnd + 1)
-            val fileTail = prevCutOff && runLen > roomOnPrevRow &&
+            val fileTail = runLen > roomOnPrevRow &&
                 looksLikeWrappedFileTail(String(cellChar[curRow], curStart, runEnd - curStart))
-            if (!(restBlank && runLen in 1..(cols / 2)) && !fileTail) return null
+            if (!hangingIndentTail && !fileTail) return null
         }
 
         return curStart
