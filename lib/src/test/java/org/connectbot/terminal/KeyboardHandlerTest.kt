@@ -1029,6 +1029,110 @@ class KeyboardHandlerTest {
         assertEquals(String(Character.toChars(largeAccent)) + "b", output)
     }
 
+    @Test
+    fun testSpanishSpacingAcuteComposesWithoutCombiningAccentFlag() {
+        // #759: several physical Spanish-layout keyboards return U+00B4 (´)
+        // or U+00A8 (¨) without KeyCharacterMap.COMBINING_ACCENT set.
+        val fakeSpanishAcuteKey = 910
+        val fakeSpanishLookup: (Int, Int, Int) -> Int = { _, keyCode, metaState ->
+            val shift = (metaState and AndroidKeyEvent.META_SHIFT_ON) != 0
+            when (keyCode) {
+                fakeSpanishAcuteKey -> if (shift) 0x00A8 else 0x00B4 // ¨ on Shift, ´ on base
+                AndroidKeyEvent.KEYCODE_A -> if (shift) 'A'.code else 'a'.code
+                AndroidKeyEvent.KEYCODE_E -> 'e'.code
+                AndroidKeyEvent.KEYCODE_U -> 'u'.code
+                AndroidKeyEvent.KEYCODE_Q -> 'q'.code
+                AndroidKeyEvent.KEYCODE_SPACE -> ' '.code
+                else -> 0
+            }
+        }
+
+        // ´ + a -> á
+        assertEquals(
+            "á",
+            collectOutput(
+                listOf(
+                    createRawKeyEvent(fakeSpanishAcuteKey),
+                    createRawKeyEvent(AndroidKeyEvent.KEYCODE_A),
+                ),
+                lookup = fakeSpanishLookup,
+            ),
+        )
+
+        // ´ + ShiftDown + Shift+A -> Á (Shift modifier press must not clear pendingDeadChar)
+        assertEquals(
+            "Á",
+            collectOutput(
+                listOf(
+                    createRawKeyEvent(fakeSpanishAcuteKey),
+                    createRawKeyEvent(AndroidKeyEvent.KEYCODE_SHIFT_LEFT),
+                    createKeyEventWithMeta(AndroidKeyEvent.KEYCODE_A, AndroidKeyEvent.META_SHIFT_ON),
+                ),
+                lookup = fakeSpanishLookup,
+            ),
+        )
+
+        // Shift+´ (¨) + u -> ü
+        assertEquals(
+            "ü",
+            collectOutput(
+                listOf(
+                    createRawKeyEvent(AndroidKeyEvent.KEYCODE_SHIFT_LEFT),
+                    createKeyEventWithMeta(fakeSpanishAcuteKey, AndroidKeyEvent.META_SHIFT_ON),
+                    createRawKeyEvent(AndroidKeyEvent.KEYCODE_U),
+                ),
+                lookup = fakeSpanishLookup,
+            ),
+        )
+
+        // ´ + q (non-combinable) -> ´q
+        assertEquals(
+            "´q",
+            collectOutput(
+                listOf(
+                    createRawKeyEvent(fakeSpanishAcuteKey),
+                    createRawKeyEvent(AndroidKeyEvent.KEYCODE_Q),
+                ),
+                lookup = fakeSpanishLookup,
+            ),
+        )
+
+        // ´ + ´ (double-tap) -> ´
+        assertEquals(
+            "´",
+            collectOutput(
+                listOf(
+                    createRawKeyEvent(fakeSpanishAcuteKey),
+                    createRawKeyEvent(fakeSpanishAcuteKey),
+                ),
+                lookup = fakeSpanishLookup,
+            ),
+        )
+
+        // ´ + Space -> ´
+        assertEquals(
+            "´",
+            collectOutput(
+                listOf(
+                    createRawKeyEvent(fakeSpanishAcuteKey),
+                    createRawKeyEvent(AndroidKeyEvent.KEYCODE_SPACE),
+                ),
+                lookup = fakeSpanishLookup,
+            ),
+        )
+    }
+
+    @Test
+    fun testSpacingAcuteViaOnTextInputComposesWithNextChar() {
+        // #759: in Standard/Secure mode an IME can deliver the physical dead key
+        // via commitText("´") -> onTextInput before the vowel arrives.
+        val received = collectCharacterOutput { handler ->
+            handler.onTextInput("´".toByteArray(Charsets.UTF_8))
+            handler.onTextInput("a".toByteArray(Charsets.UTF_8))
+        }.toString(Charsets.UTF_8)
+        assertEquals("á", received)
+    }
+
     // === Newline (0x0A) handling tests ===
 
     private fun collectCharacterOutput(block: (KeyboardHandler) -> Unit): ByteArray {

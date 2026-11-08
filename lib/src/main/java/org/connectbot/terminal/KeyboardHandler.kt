@@ -306,6 +306,15 @@ internal class KeyboardHandler(
             return true
         }
 
+        // Ignore bare modifier keys (Shift, Alt/AltGr, Ctrl, Meta, CapsLock) so
+        // pressing Shift between a dead key and the following letter (e.g. ´ then
+        // Shift+A -> Á) does not wipe pendingDeadChar (#759).
+        if (AndroidKeyEvent.isModifierKey(nativeEvent.keyCode) ||
+            nativeEvent.keyCode == AndroidKeyEvent.KEYCODE_CAPS_LOCK
+        ) {
+            return false
+        }
+
         // Handle regular printable characters
         val stickyShift = modifierManager?.isShiftActive() == true
         val codepoint = getCodePointFromKeyEvent(event, extraShift = stickyShift, stripAlt = stripAltGr)
@@ -326,6 +335,39 @@ internal class KeyboardHandler(
      */
     fun onCharacterInput(char: Char, ctrl: Boolean = false, alt: Boolean = false): Boolean {
         val modifiers = buildModifierMask(ctrl, alt, false)
+        if (modifiers and TERMINAL_SHORTCUT_MODIFIERS == 0) {
+            val dead = pendingDeadChar
+            if (dead == 0 && isStandaloneDeadAccent(char.code)) {
+                pendingDeadChar = deadToSpacingChar(char.code)
+                return true
+            }
+            if (dead != 0) {
+                pendingDeadChar = 0
+                val composed = composeDeadAndBase(dead, char.code)
+                val compose = composeMode
+                if (composed != 0) {
+                    if (compose != null && compose.isActive) {
+                        for (c in Character.toChars(composed)) compose.appendChar(c)
+                        return true
+                    }
+                    dispatchCodepointOrEnter(modifiers, composed)
+                } else {
+                    val spacingDead = deadToSpacingChar(dead)
+                    if (compose != null && compose.isActive) {
+                        for (c in Character.toChars(spacingDead)) compose.appendChar(c)
+                        compose.appendChar(char)
+                        return true
+                    }
+                    dispatchCodepointOrEnter(modifiers, spacingDead)
+                    dispatchCodepointOrEnter(modifiers, char.code)
+                }
+                modifierManager?.clearTransients()
+                onInputProcessed?.invoke()
+                return true
+            }
+        } else {
+            pendingDeadChar = 0
+        }
         val compose = composeMode
         if (compose != null && compose.isActive) {
             if (modifiers and TERMINAL_SHORTCUT_MODIFIERS == 0) {
@@ -353,10 +395,34 @@ internal class KeyboardHandler(
         if (bytes.isEmpty()) return
 
         val raw = bytes.toString(Charsets.UTF_8)
-        val text = if (Normalizer.isNormalized(raw, Normalizer.Form.NFC)) {
+        var text = if (Normalizer.isNormalized(raw, Normalizer.Form.NFC)) {
             raw
         } else {
             Normalizer.normalize(raw, Normalizer.Form.NFC)
+        }
+        if (text.isEmpty()) return
+
+        val modifiers = getModifierMask()
+        if (modifiers and TERMINAL_SHORTCUT_MODIFIERS == 0) {
+            val dead = pendingDeadChar
+            val firstCp = text.codePointAt(0)
+            val firstCpChars = Character.charCount(firstCp)
+            if (dead == 0 && firstCpChars == text.length && isStandaloneDeadAccent(firstCp)) {
+                pendingDeadChar = deadToSpacingChar(firstCp)
+                return
+            }
+            if (dead != 0) {
+                pendingDeadChar = 0
+                val rest = text.substring(firstCpChars)
+                val composed = composeDeadAndBase(dead, firstCp)
+                text = if (composed != 0) {
+                    String(Character.toChars(composed)) + rest
+                } else {
+                    String(Character.toChars(deadToSpacingChar(dead))) + text
+                }
+            }
+        } else {
+            pendingDeadChar = 0
         }
 
         val compose = composeMode
@@ -364,8 +430,6 @@ internal class KeyboardHandler(
             compose.appendText(text)
             return
         }
-
-        val modifiers = getModifierMask()
 
         sendText(modifiers, text, false)
         modifierManager?.clearTransients()
@@ -520,13 +584,16 @@ internal class KeyboardHandler(
 
         val dead = pendingDeadChar
         val base: Int
-        if (raw and KeyCharacterMap.COMBINING_ACCENT != 0) {
-            base = raw and KeyCharacterMap.COMBINING_ACCENT_MASK
+        val isExplicitDead = (raw and KeyCharacterMap.COMBINING_ACCENT) != 0
+        val maskedRaw = if (isExplicitDead) raw and KeyCharacterMap.COMBINING_ACCENT_MASK else raw
+        if (isExplicitDead || isStandaloneDeadAccent(maskedRaw)) {
+            base = deadToSpacingChar(maskedRaw)
             if (dead == 0) {
                 pendingDeadChar = base
                 return 0L
             }
-            // No need to handle the double-combining accent here; KCM.getDeadChar does it.
+            // If a dead key was already pending, fall through to combine `dead` + `base`
+            // (e.g. double-tapping ´ emits spacing ´).
         } else {
             base = raw
         }
@@ -534,15 +601,101 @@ internal class KeyboardHandler(
         pendingDeadChar = 0
 
         if (dead != 0) {
-            val composed = KeyCharacterMap.getDeadChar(dead, base)
+            val composed = composeDeadAndBase(dead, base)
             if (composed != 0) return composed.toLong()
 
             // Combination not possible: the caller will emit `dead` first, then we return `raw`.
             // Use bit 63 as a flag for multiple codepoints.
-            return (1L shl 63) or (dead.toLong() shl 32) or base.toLong()
+            val spacingDead = deadToSpacingChar(dead)
+            return (1L shl 63) or (spacingDead.toLong() shl 32) or base.toLong()
         }
 
         return base.toLong()
+    }
+
+    /**
+     * Several physical keyboard layouts (including Spanish, Latin American, and ISO European
+     * USB/Bluetooth maps) report dead-key accents as their spacing Unicode character (e.g.
+     * U+00B4 ACUTE ACCENT `´` or U+00A8 DIAERESIS `¨`) or raw combining mark (U+0300..U+036F)
+     * without setting [KeyCharacterMap.COMBINING_ACCENT] (#759).
+     *
+     * ASCII punctuation (`\``, `^`, `~`, `'`, `"`) is intentionally excluded here so shell
+     * syntax characters on non-dead-key layouts still emit immediately unless the KCM sets
+     * [KeyCharacterMap.COMBINING_ACCENT].
+     */
+    private fun isStandaloneDeadAccent(codePoint: Int): Boolean = when (codePoint) {
+        0x00A8, // ¨ DIAERESIS
+        0x00AF, // ¯ MACRON
+        0x00B4, // ´ ACUTE ACCENT
+        0x00B8, // ¸ CEDILLA
+        0x02C6, // ˆ MODIFIER LETTER CIRCUMFLEX ACCENT
+        0x02C7, // ˇ CARON
+        0x02C9, // ˉ MODIFIER LETTER MACRON
+        0x02D8, // ˘ BREVE
+        0x02D9, // ˙ DOT ABOVE
+        0x02DA, // ˚ RING ABOVE
+        0x02DB, // ˛ OGONEK
+        0x02DC, // ˜ SMALL TILDE
+        0x02DD, // ˝ DOUBLE ACUTE ACCENT
+        0x0384, // ΄ GREEK TONOS
+        0x0385, // ΅ GREEK DIALYTIKA TONOS
+        -> true
+        in 0x0300..0x036F -> true
+        else -> false
+    }
+
+    private fun deadToSpacingChar(codePoint: Int): Int = when (codePoint) {
+        0x0300 -> '`'.code
+        0x0301 -> 0x00B4 // ´
+        0x0302 -> 0x02C6 // ˆ
+        0x0303 -> 0x02DC // ˜
+        0x0304 -> 0x00AF // ¯
+        0x0306 -> 0x02D8 // ˘
+        0x0307 -> 0x02D9 // ˙
+        0x0308 -> 0x00A8 // ¨
+        0x030A -> 0x02DA // ˚
+        0x030B -> 0x02DD // ˝
+        0x030C -> 0x02C7 // ˇ
+        0x0327 -> 0x00B8 // ¸
+        0x0328 -> 0x02DB // ˛
+        else -> codePoint
+    }
+
+    private fun deadToCombiningMarks(dead: Int): String? = when (dead) {
+        '`'.code, 0x0300 -> "\u0300"
+        '\''.code, 0x00B4, 0x0301, 0x0384 -> "\u0301"
+        '^'.code, 0x02C6, 0x0302 -> "\u0302"
+        '~'.code, 0x02DC, 0x0303 -> "\u0303"
+        0x00AF, 0x02C9, 0x0304 -> "\u0304"
+        0x02D8, 0x0306 -> "\u0306"
+        0x02D9, 0x0307 -> "\u0307"
+        '"'.code, 0x00A8, 0x0308 -> "\u0308"
+        0x00B0, 0x02DA, 0x030A -> "\u030A"
+        0x02DD, 0x030B -> "\u030B"
+        0x02C7, 0x030C -> "\u030C"
+        0x00B8, 0x0327 -> "\u0327"
+        0x02DB, 0x0328 -> "\u0328"
+        0x0385 -> "\u0308\u0301"
+        in 0x0300..0x036F -> String(Character.toChars(dead))
+        else -> null
+    }
+
+    private fun composeDeadAndBase(dead: Int, base: Int): Int {
+        val spacingDead = deadToSpacingChar(dead)
+        if (base == dead || base == spacingDead || base == ' '.code) {
+            return spacingDead
+        }
+        val kcmComposed = KeyCharacterMap.getDeadChar(spacingDead, base)
+        if (kcmComposed != 0) return kcmComposed
+
+        val combining = deadToCombiningMarks(dead) ?: return 0
+        val candidate = String(Character.toChars(base)) + combining
+        val normalized = Normalizer.normalize(candidate, Normalizer.Form.NFC)
+        return if (normalized.codePointCount(0, normalized.length) == 1) {
+            normalized.codePointAt(0)
+        } else {
+            0
+        }
     }
 
     private fun dispatchCodepointOrEnter(modifiers: Int, codepoint: Int) {
