@@ -94,6 +94,22 @@ class SelectionOverlayLayoutTest {
     }
 
     @Test
+    fun effectiveRowWidthPx_usesMeasuredWidthWhenLocalizedPillsExpandBeyondMinimum() {
+        // Longer localized labels (e.g. Russian "Копировать" / "Вставить", #794)
+        // widen the Copy/Paste pills past the 48dp minimum; right-edge clamping
+        // must retract by the laid-out row width once measured.
+        val minWidthPx = 320f
+        assertEquals(320f, effectiveSelectionOverlayRowWidthPx(minRowWidthPx = minWidthPx, measuredRowWidthPx = 0), 0.001f)
+        assertEquals(468f, effectiveSelectionOverlayRowWidthPx(minRowWidthPx = minWidthPx, measuredRowWidthPx = 468), 0.001f)
+        val clamped = clampSelectionOverlayX(
+            rawX = 900f,
+            rowWidthPx = effectiveSelectionOverlayRowWidthPx(minRowWidthPx = minWidthPx, measuredRowWidthPx = 468),
+            availableWidth = 1000f,
+        )
+        assertEquals(1000f - 468f, clamped, 0.001f)
+    }
+
+    @Test
     fun clampY_tinyViewportNeverThrows() {
         // A coerceIn(min, max) formulation throws when min > max; the clamp
         // must degenerate to the top edge on viewports shorter than the pill.

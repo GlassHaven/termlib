@@ -43,8 +43,11 @@ import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.DropdownMenu
@@ -365,12 +368,19 @@ private const val MAX_PINCH_FONT_SP = 32f
 private val COPY_BUTTON_SIZE = 48.dp
 
 /**
+ * Horizontal text padding inside the Copy and Paste selection pills so longer
+ * localized labels (e.g. Russian "Копировать") expand the pill cleanly on one
+ * line instead of wrapping mid-word (#794).
+ */
+private val COPY_BUTTON_HORIZONTAL_PADDING = 12.dp
+
+/**
  * Vertical offset for the copy button above the selection in dp.
  */
 private val COPY_BUTTON_OFFSET = 48.dp
 
 /**
- * Total width of the floating Copy / more-options / Paste pill row shown
+ * Minimum width of the floating Copy / more-options / Paste pill row shown
  * while a selection is active: a Paste pill rides along when a paste
  * handler is attached, adding one pill and one 8dp gap (#661).
  */
@@ -379,6 +389,14 @@ internal fun selectionOverlayRowWidth(hasPaste: Boolean): Dp = if (hasPaste) {
 } else {
     COPY_BUTTON_SIZE * 2 + 8.dp
 }
+
+/**
+ * Effective pixel width of the selection pill row for right-edge clamping:
+ * uses the actual laid-out width when localized labels expand the Copy/Paste
+ * pills beyond [minRowWidthPx], falling back to [minRowWidthPx] on the first
+ * composition pass before layout (#794).
+ */
+internal fun effectiveSelectionOverlayRowWidthPx(minRowWidthPx: Float, measuredRowWidthPx: Int): Float = maxOf(minRowWidthPx, measuredRowWidthPx.toFloat())
 
 /**
  * Clamp the pill row's left edge so the whole row stays inside the
@@ -3203,9 +3221,14 @@ internal fun TerminalWithAccessibility(
             val range = selectionManager.selectionRange
             if (range != null) {
                 val endPosition = range.getEndPosition()
-                val buttonRowWidthPx = with(density) {
+                var measuredRowWidthPx by remember { mutableIntStateOf(0) }
+                val minButtonRowWidthPx = with(density) {
                     selectionOverlayRowWidth(hasPaste = onPasteRequest != null).toPx()
                 }
+                val buttonRowWidthPx = effectiveSelectionOverlayRowWidthPx(
+                    minRowWidthPx = minButtonRowWidthPx,
+                    measuredRowWidthPx = measuredRowWidthPx,
+                )
                 val buttonX = clampSelectionOverlayX(
                     rawX = endPosition.second * baseCharWidth,
                     rowWidthPx = buttonRowWidthPx,
@@ -3230,125 +3253,133 @@ internal fun TerminalWithAccessibility(
                 var overflowMenuExpanded by remember { mutableStateOf(false) }
 
                 Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier
+                        .onSizeChanged { measuredRowWidthPx = it.width }
                         .offset(
                             x = with(density) { buttonX.toDp() },
                             y = with(density) { buttonY.toDp() },
                         ),
                 ) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FloatingActionButton(
+                        onClick = {
+                            val selectedText =
+                                selectionManager.getSelectedText(screenState.snapshot, screenState.scrollbackPosition)
+                            // Only write when there is something to write.
+                            // getSelectedText returns "" when the selection's
+                            // rows have drifted out of the snapshot (new output
+                            // between long-press and Copy), and setText with an
+                            // empty string would clobber the user's previous
+                            // clipboard content (#639).
+                            if (selectedText.isNotEmpty()) {
+                                clipboardManager.setText(AnnotatedString(selectedText))
+                            }
+                            selectionManager.clearSelection()
+                        },
+                        modifier = Modifier
+                            .height(COPY_BUTTON_SIZE)
+                            .defaultMinSize(minWidth = COPY_BUTTON_SIZE),
+                        containerColor = Color.White,
+                        contentColor = Color.Black,
+                    ) {
+                        Text(
+                            text = stringResource(R.string.terminal_selection_copy),
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1,
+                            softWrap = false,
+                            modifier = Modifier.padding(horizontal = COPY_BUTTON_HORIZONTAL_PADDING),
+                        )
+                    }
+
+                    Box {
+                        val moreOptionsLabel = stringResource(R.string.terminal_selection_more_options_description)
                         FloatingActionButton(
                             onClick = {
-                                val selectedText =
-                                    selectionManager.getSelectedText(screenState.snapshot, screenState.scrollbackPosition)
-                                // Only write when there is something to write.
-                                // getSelectedText returns "" when the selection's
-                                // rows have drifted out of the snapshot (new output
-                                // between long-press and Copy), and setText with an
-                                // empty string would clobber the user's previous
-                                // clipboard content (#639).
-                                if (selectedText.isNotEmpty()) {
-                                    clipboardManager.setText(AnnotatedString(selectedText))
+                                overflowMenuExpanded = true
+                                if (shouldShowIme) {
+                                    scope.launch {
+                                        delay(IME_SHOW_DELAY_MS)
+                                        imeInputView?.showIme()
+                                    }
                                 }
-                                selectionManager.clearSelection()
                             },
-                            modifier = Modifier.size(COPY_BUTTON_SIZE),
+                            modifier = Modifier
+                                .size(COPY_BUTTON_SIZE)
+                                .semantics {
+                                    contentDescription = moreOptionsLabel
+                                    role = Role.Button
+                                },
                             containerColor = Color.White,
                             contentColor = Color.Black,
                         ) {
-                            Text(stringResource(R.string.terminal_selection_copy), style = MaterialTheme.typography.labelSmall)
+                            Text(stringResource(R.string.terminal_selection_more_options), style = MaterialTheme.typography.labelSmall)
                         }
 
-                        Box {
-                            val moreOptionsLabel = stringResource(R.string.terminal_selection_more_options_description)
-                            FloatingActionButton(
-                                onClick = {
-                                    overflowMenuExpanded = true
-                                    if (shouldShowIme) {
-                                        scope.launch {
-                                            delay(IME_SHOW_DELAY_MS)
-                                            imeInputView?.showIme()
-                                        }
+                        DropdownMenu(
+                            expanded = overflowMenuExpanded,
+                            onDismissRequest = {
+                                overflowMenuExpanded = false
+                                if (shouldShowIme) {
+                                    scope.launch {
+                                        delay(IME_SHOW_DELAY_MS)
+                                        imeInputView?.showIme()
                                     }
-                                },
-                                modifier = Modifier
-                                    .size(COPY_BUTTON_SIZE)
-                                    .semantics {
-                                        contentDescription = moreOptionsLabel
-                                        role = Role.Button
-                                    },
-                                containerColor = Color.White,
-                                contentColor = Color.Black,
-                            ) {
-                                Text(stringResource(R.string.terminal_selection_more_options), style = MaterialTheme.typography.labelSmall)
-                            }
-
-                            DropdownMenu(
-                                expanded = overflowMenuExpanded,
-                                onDismissRequest = {
-                                    overflowMenuExpanded = false
-                                    if (shouldShowIme) {
-                                        scope.launch {
-                                            delay(IME_SHOW_DELAY_MS)
-                                            imeInputView?.showIme()
-                                        }
-                                    }
-                                },
-                            ) {
-                                DropdownMenuItem(
-                                    text = { Text(stringResource(R.string.terminal_selection_select_all)) },
-                                    onClick = {
-                                        selectionController.selectAll()
-                                        overflowMenuExpanded = false
-                                    },
-                                )
-                                DropdownMenuItem(
-                                    text = { Text(stringResource(R.string.terminal_selection_share)) },
-                                    onClick = {
-                                        val selectedText = selectionManager.getSelectedText(
-                                            screenState.snapshot,
-                                            screenState.scrollbackPosition,
-                                        )
-                                        val intent = Intent(Intent.ACTION_SEND).apply {
-                                            type = "text/plain"
-                                            putExtra(Intent.EXTRA_TEXT, selectedText)
-                                            if (context !is Activity) {
-                                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                            }
-                                        }
-                                        try {
-                                            context.startActivity(Intent.createChooser(intent, null))
-                                        } catch (_: android.content.ActivityNotFoundException) {
-                                            // No app available to handle the share intent; silently ignore
-                                        }
-                                        overflowMenuExpanded = false
-                                    },
-                                )
-                                if (onPasteRequest != null) {
-                                    DropdownMenuItem(
-                                        text = { Text(stringResource(R.string.terminal_selection_paste)) },
-                                        onClick = {
-                                            selectionManager.clearSelection()
-                                            onPasteRequest()
-                                            overflowMenuExpanded = false
-                                        },
-                                    )
                                 }
-                                DropdownMenuItem(
-                                    text = {
-                                        val modeLabel = when (selectionManager.mode) {
-                                            SelectionMode.CHARACTER -> stringResource(R.string.terminal_selection_mode_character)
-                                            SelectionMode.WORD -> stringResource(R.string.terminal_selection_mode_word)
-                                            else -> stringResource(R.string.terminal_selection_mode_line)
+                            },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.terminal_selection_select_all)) },
+                                onClick = {
+                                    selectionController.selectAll()
+                                    overflowMenuExpanded = false
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.terminal_selection_share)) },
+                                onClick = {
+                                    val selectedText = selectionManager.getSelectedText(
+                                        screenState.snapshot,
+                                        screenState.scrollbackPosition,
+                                    )
+                                    val intent = Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(Intent.EXTRA_TEXT, selectedText)
+                                        if (context !is Activity) {
+                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                         }
-                                        Text(modeLabel)
-                                    },
+                                    }
+                                    try {
+                                        context.startActivity(Intent.createChooser(intent, null))
+                                    } catch (_: android.content.ActivityNotFoundException) {
+                                        // No app available to handle the share intent; silently ignore
+                                    }
+                                    overflowMenuExpanded = false
+                                },
+                            )
+                            if (onPasteRequest != null) {
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.terminal_selection_paste)) },
                                     onClick = {
-                                        selectionController.toggleSelectionMode()
-                                        // Keep menu open for easy cycling
+                                        selectionManager.clearSelection()
+                                        onPasteRequest()
+                                        overflowMenuExpanded = false
                                     },
                                 )
                             }
+                            DropdownMenuItem(
+                                text = {
+                                    val modeLabel = when (selectionManager.mode) {
+                                        SelectionMode.CHARACTER -> stringResource(R.string.terminal_selection_mode_character)
+                                        SelectionMode.WORD -> stringResource(R.string.terminal_selection_mode_word)
+                                        else -> stringResource(R.string.terminal_selection_mode_line)
+                                    }
+                                    Text(modeLabel)
+                                },
+                                onClick = {
+                                    selectionController.toggleSelectionMode()
+                                    // Keep menu open for easy cycling
+                                },
+                            )
                         }
                     }
                     if (onPasteRequest != null) {
@@ -3357,11 +3388,19 @@ internal fun TerminalWithAccessibility(
                                 selectionManager.clearSelection()
                                 onPasteRequest()
                             },
-                            modifier = Modifier.size(COPY_BUTTON_SIZE),
+                            modifier = Modifier
+                                .height(COPY_BUTTON_SIZE)
+                                .defaultMinSize(minWidth = COPY_BUTTON_SIZE),
                             containerColor = Color.White,
                             contentColor = Color.Black,
                         ) {
-                            Text(stringResource(R.string.terminal_selection_paste), style = MaterialTheme.typography.labelSmall)
+                            Text(
+                                text = stringResource(R.string.terminal_selection_paste),
+                                style = MaterialTheme.typography.labelSmall,
+                                maxLines = 1,
+                                softWrap = false,
+                                modifier = Modifier.padding(horizontal = COPY_BUTTON_HORIZONTAL_PADDING),
+                            )
                         }
                     }
                 }
