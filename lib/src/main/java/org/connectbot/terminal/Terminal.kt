@@ -756,6 +756,7 @@ internal fun TerminalWithAccessibility(
     // being keyed on them: pointerInput only restarts on terminalEmulator /
     // gestureCallback, so a captured Boolean would go stale. (#435)
     val currentMouseModeActive by rememberUpdatedState(mouseModeActive)
+    val currentTapToPositionCursorOnPrompt by rememberUpdatedState(tapToPositionCursorOnPrompt)
 
     val density = LocalDensity.current
     // Density-scaled once here; every scroll site below uses this, never a raw
@@ -2916,22 +2917,16 @@ internal fun TerminalWithAccessibility(
                                         if (hyperlinkUrl != null) {
                                             onHyperlinkClick(hyperlinkUrl)
                                         } else {
-                                            // Give callback chance to handle tap (mouse mode)
-                                            val callbackHandled = gestureCallback?.onTap(tapCol, tapRow) == true
-
-                                            // Tap-to-position-cursor on an OSC 133 prompt input
-                                            // line: synthesise arrow-key dispatches so the
-                                            // shell's readline cursor lands at the tapped
-                                            // column. Only fires when not in mouse mode, the
-                                            // viewport is at the live bottom, and the cursor
-                                            // row's segments confirm we're between OSC 133;B
-                                            // and the next 133;D for that prompt. Focus still
-                                            // happens so the keyboard pops up for further
-                                            // typing; only the tap/double-tap callbacks are
-                                            // suppressed to avoid e.g. a fullscreen-toggle
-                                            // double-tap eating a quick double-click reposition.
-                                            val tapPositionedCursor = !callbackHandled &&
-                                                tapToPositionCursorOnPrompt &&
+                                            // Tap-to-position-cursor on an active prompt input
+                                            // line or REPL input box: synthesise arrow-key
+                                            // dispatches so the shell/REPL cursor lands at the
+                                            // tapped column. Runs before the mouse-mode tap
+                                            // callback so multiplexers like tmux (which enable
+                                            // mouse mode 1002 globally even when the active pane
+                                            // is a shell or inline TUI prompt like agy) do not
+                                            // swallow prompt cursor taps. Non-prompt taps fall
+                                            // through to gestureCallback?.onTap as usual.
+                                            val tapPositionedCursor = currentTapToPositionCursorOnPrompt &&
                                                 screenState.scrollbackPosition == 0 &&
                                                 dispatchTapToPositionCursor(
                                                     terminalEmulator,
@@ -2939,6 +2934,11 @@ internal fun TerminalWithAccessibility(
                                                     tapRow,
                                                     tapCol,
                                                 )
+
+                                            // Give callback chance to handle tap (mouse mode)
+                                            // when the tap was not consumed by prompt positioning.
+                                            val callbackHandled = !tapPositionedCursor &&
+                                                gestureCallback?.onTap(tapCol, tapRow) == true
 
                                             if (!callbackHandled) {
                                                 if (currentKeyboardEnabled) {

@@ -236,4 +236,132 @@ class TapToPositionCursorTest {
         assertTrue(handled)
         verify(exactly = 5) { emulator.dispatchKey(0, VTermKey.LEFT) }
     }
+
+    @Test
+    fun `boxed REPL prompt positions cursor on same row without OSC 133`() {
+        val rule = "─".repeat(54)
+        val emulator = mockk<TerminalEmulator>(relaxed = true)
+        val snap = snapshot(
+            screenLines = listOf(
+                line(rule, cols = 54),
+                line("> hello world", cols = 54),
+                line(rule, cols = 54),
+            ),
+            cursorRow = 1,
+            cursorCol = 13,
+            cols = 54,
+        )
+
+        val handled = dispatchTapToPositionCursor(emulator, snap, tapRow = 1, tapCol = 8)
+
+        assertTrue(handled)
+        verify(exactly = 5) { emulator.dispatchKey(0, VTermKey.LEFT) }
+    }
+
+    @Test
+    fun `boxed REPL prompt clamps tap in trailing whitespace to end of typed text`() {
+        val rule = "─".repeat(54)
+        val emulator = mockk<TerminalEmulator>(relaxed = true)
+        val snap = snapshot(
+            screenLines = listOf(
+                line(rule, cols = 54),
+                line("> hello world", cols = 54),
+                line(rule, cols = 54),
+            ),
+            cursorRow = 1,
+            cursorCol = 8,
+            cols = 54,
+        )
+
+        // Text "> hello world" ends at col 13; tapping at col 40 clamps to 13 (delta = +5).
+        val handled = dispatchTapToPositionCursor(emulator, snap, tapRow = 1, tapCol = 40)
+
+        assertTrue(handled)
+        verify(exactly = 5) { emulator.dispatchKey(0, VTermKey.RIGHT) }
+    }
+
+    @Test
+    fun `boxed REPL prompt positions cursor across wrapped lines`() {
+        val rule = "─".repeat(54)
+        val emulator = mockk<TerminalEmulator>(relaxed = true)
+        val snap = snapshot(
+            screenLines = listOf(
+                line(rule, cols = 54),
+                line("> Can you see why the mouse click cursor position", cols = 54),
+                line("  doesnt work in agy in tmux", cols = 54),
+                line(rule, cols = 54),
+            ),
+            cursorRow = 2,
+            cursorCol = 12,
+            cols = 54,
+        )
+
+        // Tap on row 1, col 10 from cursor on row 2, col 12:
+        // 10 LEFTs to (row 2, col 2), 1 UP to (row 1, col 2), 8 RIGHTs to (row 1, col 10).
+        val handled = dispatchTapToPositionCursor(emulator, snap, tapRow = 1, tapCol = 10)
+
+        assertTrue(handled)
+        verify(exactly = 10) { emulator.dispatchKey(0, VTermKey.LEFT) }
+        verify(exactly = 1) { emulator.dispatchKey(0, VTermKey.UP) }
+        verify(exactly = 8) { emulator.dispatchKey(0, VTermKey.RIGHT) }
+    }
+
+    @Test
+    fun `boxed REPL prompt ignores taps outside the rule box`() {
+        val rule = "─".repeat(54)
+        val emulator = mockk<TerminalEmulator>(relaxed = true)
+        val snap = snapshot(
+            screenLines = listOf(
+                line("conversation history line", cols = 54),
+                line(rule, cols = 54),
+                line("> hello world", cols = 54),
+                line(rule, cols = 54),
+                line("esc to cancel                  Gemini 4 Argon", cols = 54),
+            ),
+            cursorRow = 2,
+            cursorCol = 13,
+            cols = 54,
+        )
+
+        assertFalse(dispatchTapToPositionCursor(emulator, snap, tapRow = 0, tapCol = 5))
+        assertFalse(dispatchTapToPositionCursor(emulator, snap, tapRow = 4, tapCol = 5))
+        verify(exactly = 0) { emulator.dispatchKey(any(), any()) }
+    }
+
+    @Test
+    fun `fallback shell prompt inside tmux positions cursor without OSC 133`() {
+        val emulator = mockk<TerminalEmulator>(relaxed = true)
+        val snap = snapshot(
+            screenLines = listOf(
+                line("ian@msi-z790:~/Code/Haven\$ git status --short", cols = 80),
+            ),
+            cursorRow = 0,
+            cursorCol = 45,
+        )
+
+        // Prompt prefix "ian@msi-z790:~/Code/Haven$ " is 27 chars (cols 0..26, startCol = 27).
+        // Tap at col 31 ("status") -> 14 LEFTs.
+        val handled = dispatchTapToPositionCursor(emulator, snap, tapRow = 0, tapCol = 31)
+
+        assertTrue(handled)
+        verify(exactly = 14) { emulator.dispatchKey(0, VTermKey.LEFT) }
+    }
+
+    @Test
+    fun `does not cross vertical tmux split divider`() {
+        val emulator = mockk<TerminalEmulator>(relaxed = true)
+        val snap = snapshot(
+            screenLines = listOf(
+                line("ian@host:~\$ echo hi      │ other pane text", cols = 80),
+            ),
+            cursorRow = 0,
+            cursorCol = 19,
+        )
+
+        // Tap at col 35 is on the right-hand tmux pane past '│' at col 25.
+        val handled = dispatchTapToPositionCursor(emulator, snap, tapRow = 0, tapCol = 35)
+
+        assertFalse(handled)
+        verify(exactly = 0) { emulator.dispatchKey(any(), any()) }
+    }
 }

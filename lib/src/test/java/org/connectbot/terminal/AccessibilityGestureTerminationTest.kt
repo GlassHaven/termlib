@@ -100,4 +100,71 @@ class AccessibilityGestureTerminationTest {
             lines.none { it.contains("selection-started") },
         )
     }
+
+    @Test
+    fun `tap on boxed prompt in mouse mode positions cursor instead of sending mouse click`() {
+        val dispatchedBytes = mutableListOf<ByteArray>()
+        val emulator = TerminalEmulatorFactory.create(
+            initialRows = 24,
+            initialCols = 80,
+            onKeyboardInput = { data -> dispatchedBytes.add(data.copyOf()) },
+        )
+
+        val tappedCells = mutableListOf<Pair<Int, Int>>()
+        val callback = object : TerminalGestureCallback {
+            override fun onTap(col: Int, row: Int): Boolean {
+                tappedCells.add(col to row)
+                return true
+            }
+        }
+
+        // Verify that even when tapToPositionCursorOnPrompt starts false (e.g. DataStore
+        // initial value) and flips to true before the tap, pointerInput sees the updated state.
+        val tapPrefState = androidx.compose.runtime.mutableStateOf(false)
+
+        composeTestRule.setContent {
+            Terminal(
+                terminalEmulator = emulator,
+                keyboardEnabled = true,
+                tapToPositionCursorOnPrompt = tapPrefState.value,
+                gestureCallback = callback,
+                modifier = Modifier.size(400.dp, 600.dp),
+            )
+        }
+        composeTestRule.waitForIdle()
+        tapPrefState.value = true
+        composeTestRule.waitForIdle()
+
+        val rule = "─".repeat(30)
+        runBlocking {
+            // Render boxed prompt at row 1 (top rule at row 0, bottom rule at row 2),
+            // then move cursor back to row 1, col 13 (1-based: 2;14H) at end of "> hello world".
+            emulator.writeInput("\u001b[H$rule\r\n> hello world\r\n$rule\u001b[2;14H".toByteArray())
+            (emulator as TerminalEmulatorImpl).processPendingUpdates()
+        }
+        composeTestRule.waitForIdle()
+
+        val snap = (emulator as TerminalEmulatorImpl).snapshot.value
+        org.junit.Assert.assertEquals(1, snap.cursorRow)
+        org.junit.Assert.assertEquals(13, snap.cursorCol)
+
+        // Tap near the start of row 1 (x = 10f -> col <= 2, while cursorCol = 13 -> delta < 0):
+        composeTestRule.onRoot().performTouchInput {
+            val target = androidx.compose.ui.geometry.Offset(10f, 22f)
+            down(target)
+            up()
+        }
+        composeTestRule.mainClock.advanceTimeBy(500)
+        composeTestRule.waitForIdle()
+
+        org.junit.Assert.assertEquals(
+            "mouse callback should not swallow a tap on the active boxed prompt (tappedCells=$tappedCells, cursor=${snap.cursorRow},${snap.cursorCol})",
+            0,
+            tappedCells.size,
+        )
+        assertTrue(
+            "expected LEFT arrow key dispatches to position cursor on boxed prompt",
+            dispatchedBytes.isNotEmpty(),
+        )
+    }
 }

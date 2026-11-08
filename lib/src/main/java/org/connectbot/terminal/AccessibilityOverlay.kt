@@ -527,31 +527,199 @@ internal fun dispatchTapToPositionCursor(
     tapRow: Int,
     tapCol: Int,
 ): Boolean {
-    if (tapRow != snapshot.cursorRow) return false
-    val line = snapshot.lines.getOrNull(tapRow) ?: return false
-    val inputSegment = line.getSegmentsOfType(SemanticType.COMMAND_INPUT)
-        .firstOrNull() ?: return false
+    val cursorLine = snapshot.lines.getOrNull(snapshot.cursorRow) ?: return false
+    val inputSegment = cursorLine.getSegmentsOfType(SemanticType.COMMAND_INPUT)
+        .firstOrNull()
 
-    // Reject if this prompt's COMMAND_FINISHED already exists — means
-    // the shell has moved past this command (133;D fired). Walk both
-    // the visible screen and the scrollback because the finished marker
-    // typically lands on a row that scrolled off-viewport.
-    val matchingFinished = (snapshot.scrollback.asSequence() + snapshot.lines.asSequence())
-        .any { l ->
-            l.getSegmentsOfType(SemanticType.COMMAND_FINISHED)
-                .any { it.promptId == inputSegment.promptId }
+    if (inputSegment != null) {
+        if (tapRow != snapshot.cursorRow) return false
+
+        // Reject if this prompt's COMMAND_FINISHED already exists — means
+        // the shell has moved past this command (133;D fired). Walk both
+        // the visible screen and the scrollback because the finished marker
+        // typically lands on a row that scrolled off-viewport.
+        val matchingFinished = (snapshot.scrollback.asSequence() + snapshot.lines.asSequence())
+            .any { l ->
+                l.getSegmentsOfType(SemanticType.COMMAND_FINISHED)
+                    .any { it.promptId == inputSegment.promptId }
+            }
+        if (matchingFinished) return false
+
+        val targetCol = tapCol.coerceAtLeast(inputSegment.startCol)
+        val delta = targetCol - snapshot.cursorCol
+        if (delta == 0) return true // already there — still suppress default tap callbacks
+
+        val key = if (delta < 0) VTermKey.LEFT else VTermKey.RIGHT
+        repeat(kotlin.math.abs(delta)) {
+            emulator.dispatchKey(0, key)
         }
-    if (matchingFinished) return false
+        return true
+    }
 
-    val targetCol = tapCol.coerceAtLeast(inputSegment.startCol)
+    // Fallback paths when OSC 133;B is absent (e.g. inside tmux, which strips
+    // OSC 133 markers by default, or in inline REPL/TUI prompts like agy).
+    if (!snapshot.cursorVisible) return false
+    if (cursorLine.getSegmentsOfType(SemanticType.COMMAND_FINISHED).isNotEmpty()) return false
+
+    if (dispatchBoxedPromptCursor(emulator, snapshot, tapRow, tapCol)) {
+        return true
+    }
+
+    if (tapRow != snapshot.cursorRow) return false
+    val promptStartCol = detectFallbackPromptStartCol(
+        text = cursorLine.text,
+        cursorCol = snapshot.cursorCol,
+        tapCol = tapCol,
+    ) ?: return false
+
+    val lastNonSpace = lastNonWhitespaceCol(cursorLine.text, promptStartCol)
+    val endCol = maxOf(promptStartCol, lastNonSpace + 1, snapshot.cursorCol)
+    val targetCol = tapCol.coerceIn(promptStartCol, endCol)
     val delta = targetCol - snapshot.cursorCol
-    if (delta == 0) return true // already there — still suppress default tap callbacks
+    if (delta == 0) return true
 
     val key = if (delta < 0) VTermKey.LEFT else VTermKey.RIGHT
     repeat(kotlin.math.abs(delta)) {
         emulator.dispatchKey(0, key)
     }
     return true
+}
+
+private val FALLBACK_PROMPT_REGEX = Regex(
+    """^(?:\s*(?:>>>|\.\.\.|[$#%>❯›»])\s|\s*(?:\([^)\r\n]+\)\s*)?(?:\[[^\]\r\n]+\]|[^\s\r\n]*[@:~][^\s\r\n]*)\s*[$#%>❯›»]\s|\s*(?:sh|bash|zsh|fish|dash|ksh|csh|tcsh|sqlite3|mysql|psql|irb|iex|lua|node)(?:-[0-9.]+)?[$#%>❯›»]\s)""",
+)
+
+private fun hasPaneDividerBetween(text: String, endColInclusive: Int): Boolean {
+    val limit = endColInclusive.coerceAtMost(text.lastIndex)
+    for (col in 0..limit) {
+        val ch = text[col]
+        if (ch == '│' || ch == '┃' || ch == '║') return true
+    }
+    return false
+}
+
+private fun isHorizontalPromptRule(text: String): Boolean {
+    // Extract the first pane segment (up to any vertical tmux split border).
+    val paneSegment = text.takeWhile { it != '│' && it != '┃' && it != '║' }.trim()
+    if (paneSegment.length < 10) return false
+    return paneSegment.all { it == '─' || it == '━' || it == '═' }
+}
+
+private fun isBoxedPromptFirstLine(text: String): Boolean {
+    if (text.length < 2) return false
+    val first = text[0]
+    val second = text[1]
+    return (first == '>' || first == '❯' || first == '›') && second == ' '
+}
+
+private fun isBoxedPromptContinuationLine(text: String): Boolean {
+    if (text.length < 2) return false
+    if (isHorizontalPromptRule(text)) return false
+    return text[0] == ' ' && text[1] == ' '
+}
+
+private fun lastNonWhitespaceCol(text: String, startCol: Int): Int {
+    val paneLimit = text.indexOfFirst { it == '│' || it == '┃' || it == '║' }
+        .let { if (it >= 0) it - 1 else text.lastIndex }
+    for (col in paneLimit downTo startCol) {
+        if (!text[col].isWhitespace()) return col
+    }
+    return startCol - 1
+}
+
+private fun dispatchBoxedPromptCursor(
+    emulator: TerminalEmulator,
+    snapshot: TerminalSnapshot,
+    tapRow: Int,
+    tapCol: Int,
+): Boolean {
+    val cursorRow = snapshot.cursorRow
+    val minSearchRow = (cursorRow - 10).coerceAtLeast(0)
+    var topRuleRow = -1
+    for (r in (cursorRow - 1) downTo minSearchRow) {
+        if (isHorizontalPromptRule(snapshot.lines[r].text)) {
+            topRuleRow = r
+            break
+        }
+    }
+    if (topRuleRow < 0) return false
+
+    val maxSearchRow = (cursorRow + 10).coerceAtMost(snapshot.lines.lastIndex)
+    var bottomRuleRow = -1
+    for (r in (cursorRow + 1)..maxSearchRow) {
+        if (isHorizontalPromptRule(snapshot.lines[r].text)) {
+            bottomRuleRow = r
+            break
+        }
+    }
+    if (bottomRuleRow < 0) return false
+
+    val boxStartRow = topRuleRow + 1
+    val boxEndRow = bottomRuleRow - 1
+    if (tapRow !in boxStartRow..boxEndRow || cursorRow !in boxStartRow..boxEndRow) {
+        return false
+    }
+
+    if (!isBoxedPromptFirstLine(snapshot.lines[boxStartRow].text)) return false
+    for (r in (boxStartRow + 1)..boxEndRow) {
+        if (!isBoxedPromptContinuationLine(snapshot.lines[r].text)) return false
+    }
+
+    val startCol = 2
+    if (snapshot.cursorCol < startCol) return false
+
+    val maxColCheck = maxOf(tapCol, snapshot.cursorCol)
+    if (hasPaneDividerBetween(snapshot.lines[cursorRow].text, maxColCheck) ||
+        hasPaneDividerBetween(snapshot.lines[tapRow].text, maxColCheck)
+    ) {
+        return false
+    }
+
+    val tapLineText = snapshot.lines[tapRow].text
+    val lastNonSpace = lastNonWhitespaceCol(tapLineText, startCol)
+    val maxColOnTapRow = if (tapRow == cursorRow) {
+        maxOf(startCol, lastNonSpace + 1, snapshot.cursorCol)
+    } else {
+        maxOf(startCol, lastNonSpace + 1)
+    }
+    val targetCol = tapCol.coerceIn(startCol, maxColOnTapRow)
+
+    if (tapRow == cursorRow) {
+        val delta = targetCol - snapshot.cursorCol
+        if (delta == 0) return true
+        val key = if (delta < 0) VTermKey.LEFT else VTermKey.RIGHT
+        repeat(kotlin.math.abs(delta)) {
+            emulator.dispatchKey(0, key)
+        }
+        return true
+    }
+
+    // Multi-line boxed prompt: walk left to startCol (offset 0 of cursorRow),
+    // step Up/Down to tapRow at startCol, then walk right to targetCol.
+    repeat((snapshot.cursorCol - startCol).coerceAtLeast(0)) {
+        emulator.dispatchKey(0, VTermKey.LEFT)
+    }
+    val rowDelta = tapRow - cursorRow
+    val verticalKey = if (rowDelta < 0) VTermKey.UP else VTermKey.DOWN
+    repeat(kotlin.math.abs(rowDelta)) {
+        emulator.dispatchKey(0, verticalKey)
+    }
+    repeat((targetCol - startCol).coerceAtLeast(0)) {
+        emulator.dispatchKey(0, VTermKey.RIGHT)
+    }
+    return true
+}
+
+private fun detectFallbackPromptStartCol(
+    text: String,
+    cursorCol: Int,
+    tapCol: Int,
+): Int? {
+    if (hasPaneDividerBetween(text, maxOf(cursorCol, tapCol))) return null
+    val prefix = text.substring(0, cursorCol.coerceIn(0, text.length))
+    val match = FALLBACK_PROMPT_REGEX.find(prefix) ?: return null
+    val startCol = match.range.last + 1
+    return if (startCol <= cursorCol) startCol else null
 }
 
 /**
