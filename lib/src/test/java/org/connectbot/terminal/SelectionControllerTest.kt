@@ -79,7 +79,11 @@ class SelectionControllerTest {
             }
 
             override fun selectAll() {
-                selectionManager.selectAll(25, 80)
+                selectionManager.selectAll(25, 80, scrollbackSize = 10, scrollbackPosition = 0)
+            }
+
+            override fun selectAllVisible() {
+                selectionManager.selectAllVisible(25, 80)
             }
 
             override fun finishSelection() {
@@ -221,6 +225,17 @@ class SelectionControllerTest {
     @Test
     fun testSelectAll() {
         selectionController.selectAll()
+        assertTrue(selectionController.isSelectionActive)
+        val range = selectionManager.selectionRange!!
+        assertEquals(-10, range.startRow)
+        assertEquals(0, range.startCol)
+        assertEquals(24, range.endRow)
+        assertEquals(79, range.endCol)
+    }
+
+    @Test
+    fun testSelectAllVisible() {
+        selectionController.selectAllVisible()
         assertTrue(selectionController.isSelectionActive)
         val range = selectionManager.selectionRange!!
         assertEquals(0, range.startRow)

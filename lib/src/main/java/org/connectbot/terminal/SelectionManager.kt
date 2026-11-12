@@ -82,9 +82,12 @@ interface SelectionController {
     fun setSelectionMode(mode: SelectionMode)
 
     /**
-     * Select all text in the terminal.
+     * Select all retained scrollback and current screen text.
      */
     fun selectAll()
+
+    /** Select only the rows currently displayed in the terminal viewport. */
+    fun selectAllVisible() = selectAll()
 
     /**
      * Finish the selection (stop extending it, but keep it active for copying).
@@ -352,10 +355,33 @@ internal class SelectionManager {
         adjustSelectionForMode(cols, snapshot, scrollbackPosition)
     }
 
-    fun selectAll(rows: Int, cols: Int) {
+    fun selectAll(
+        rows: Int,
+        cols: Int,
+        scrollbackSize: Int = 0,
+        scrollbackPosition: Int = 0,
+    ) {
+        val sbSize = scrollbackSize.coerceAtLeast(0)
+        val sbPos = scrollbackPosition.coerceAtLeast(0)
         mode = SelectionMode.CHARACTER
         isSelecting = false
-        selectionRange = SelectionRange(0, 0, rows - 1, cols - 1)
+        selectionRange = SelectionRange(
+            startRow = sbPos - sbSize,
+            startCol = 0,
+            endRow = sbPos + (rows - 1).coerceAtLeast(0),
+            endCol = (cols - 1).coerceAtLeast(0),
+        )
+    }
+
+    fun selectAllVisible(rows: Int, cols: Int) {
+        mode = SelectionMode.CHARACTER
+        isSelecting = false
+        selectionRange = SelectionRange(
+            startRow = 0,
+            startCol = 0,
+            endRow = (rows - 1).coerceAtLeast(0),
+            endCol = (cols - 1).coerceAtLeast(0),
+        )
     }
 
     /**
@@ -400,12 +426,14 @@ internal class SelectionManager {
      * Clamps the selection range to the given dimensions.
      * Useful when the terminal is resized.
      */
-    fun clampToDimensions(rows: Int, cols: Int) {
+    fun clampToDimensions(rows: Int, cols: Int, scrollbackPosition: Int = 0) {
         val range = selectionRange ?: return
-        val newStartRow = range.startRow.coerceAtMost(rows - 1)
-        val newEndRow = range.endRow.coerceAtMost(rows - 1)
-        val newStartCol = range.startCol.coerceAtMost(cols - 1)
-        val newEndCol = range.endCol.coerceAtMost(cols - 1)
+        val maxRow = scrollbackPosition.coerceAtLeast(0) + (rows - 1).coerceAtLeast(0)
+        val maxCol = (cols - 1).coerceAtLeast(0)
+        val newStartRow = range.startRow.coerceAtMost(maxRow)
+        val newEndRow = range.endRow.coerceAtMost(maxRow)
+        val newStartCol = range.startCol.coerceAtMost(maxCol)
+        val newEndCol = range.endCol.coerceAtMost(maxCol)
 
         if (newStartRow != range.startRow || newEndRow != range.endRow ||
             newStartCol != range.startCol || newEndCol != range.endCol

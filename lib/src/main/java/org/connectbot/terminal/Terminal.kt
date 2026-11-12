@@ -1112,7 +1112,19 @@ internal fun TerminalWithAccessibility(
             }
 
             override fun selectAll() {
-                selectionManager.selectAll(screenState.snapshot.rows, screenState.snapshot.cols)
+                selectionManager.selectAll(
+                    rows = screenState.snapshot.rows,
+                    cols = screenState.snapshot.cols,
+                    scrollbackSize = screenState.snapshot.scrollback.size,
+                    scrollbackPosition = screenState.scrollbackPosition,
+                )
+            }
+
+            override fun selectAllVisible() {
+                selectionManager.selectAllVisible(
+                    rows = screenState.snapshot.rows,
+                    cols = screenState.snapshot.cols,
+                )
             }
 
             override fun finishSelection() {
@@ -1597,7 +1609,11 @@ internal fun TerminalWithAccessibility(
             // This ensures the Copy button resets to the last visible line when the screen
             // shrinks (e.g. keyboard up) without forcing a scroll to the bottom.
             if (selectionManager.mode != SelectionMode.NONE) {
-                selectionManager.clampToDimensions(newRows, newCols)
+                selectionManager.clampToDimensions(
+                    newRows,
+                    newCols,
+                    screenState.scrollbackPosition,
+                )
             }
         }
 
@@ -2001,6 +2017,7 @@ internal fun TerminalWithAccessibility(
                                         baseCharWidth,
                                         baseCharHeight,
                                         keyboardCoveredPx = keyboardCoveredPx,
+                                        rows = screenState.snapshot.rows,
                                     )
                                     if (touchingStart || touchingEnd) {
                                         gestureType = GestureType.HandleDrag
@@ -3149,25 +3166,29 @@ internal fun TerminalWithAccessibility(
                     if (selectionManager.mode != SelectionMode.NONE && !selectionManager.isSelecting) {
                         val range = selectionManager.selectionRange
                         if (range != null) {
-                            // Start handle
+                            // Start handle (only draw when its anchor row is in the viewport)
                             val startPosition = range.getStartPosition()
-                            drawSelectionHandle(
-                                row = startPosition.first,
-                                col = startPosition.second,
-                                charWidth = baseCharWidth,
-                                charHeight = baseCharHeight,
-                                pointingDown = false,
-                            )
+                            if (startPosition.first in 0 until screenState.snapshot.rows) {
+                                drawSelectionHandle(
+                                    row = startPosition.first,
+                                    col = startPosition.second,
+                                    charWidth = baseCharWidth,
+                                    charHeight = baseCharHeight,
+                                    pointingDown = false,
+                                )
+                            }
 
-                            // End handle
+                            // End handle (only draw when its anchor row is in the viewport)
                             val endPosition = range.getEndPosition()
-                            drawSelectionHandle(
-                                row = endPosition.first,
-                                col = endPosition.second,
-                                charWidth = baseCharWidth,
-                                charHeight = baseCharHeight,
-                                pointingDown = true,
-                            )
+                            if (endPosition.first in 0 until screenState.snapshot.rows) {
+                                drawSelectionHandle(
+                                    row = endPosition.first,
+                                    col = endPosition.second,
+                                    charWidth = baseCharWidth,
+                                    charHeight = baseCharHeight,
+                                    pointingDown = true,
+                                )
+                            }
                         }
                     }
                 } // end translate(top = -keyboardCoveredPx)
@@ -3331,6 +3352,13 @@ internal fun TerminalWithAccessibility(
                                 text = { Text(stringResource(R.string.terminal_selection_select_all)) },
                                 onClick = {
                                     selectionController.selectAll()
+                                    overflowMenuExpanded = false
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.terminal_selection_select_all_visible)) },
+                                onClick = {
+                                    selectionController.selectAllVisible()
                                     overflowMenuExpanded = false
                                 },
                             )
@@ -3952,13 +3980,14 @@ internal fun applyHandleDrag(
  * Check if a touch position is near a selection handle.
  * Returns (touchingStart, touchingEnd).
  */
-private fun isTouchingHandle(
+internal fun isTouchingHandle(
     touchPos: Offset,
     range: SelectionRange,
     charWidth: Float,
     charHeight: Float,
     hitRadius: Float = HANDLE_HIT_RADIUS,
     keyboardCoveredPx: Float = 0f,
+    rows: Int = Int.MAX_VALUE,
 ): Pair<Boolean, Boolean> {
     // Handle circles are drawn offset from the character edge by their radius (~12dp).
     // Start handle points up (circle above the character top),
@@ -3980,9 +4009,12 @@ private fun isTouchingHandle(
     val distToStart = (contentTouch - startPos).getDistance()
     val distToEnd = (contentTouch - endPos).getDistance()
 
+    val startVisible = range.startRow in 0 until rows
+    val endVisible = range.endRow in 0 until rows
+
     return Pair(
-        distToStart < hitRadius,
-        distToEnd < hitRadius,
+        startVisible && distToStart < hitRadius,
+        endVisible && distToEnd < hitRadius,
     )
 }
 

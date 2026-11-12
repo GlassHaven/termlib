@@ -16,6 +16,7 @@
  */
 package org.connectbot.terminal
 
+import androidx.compose.ui.geometry.Offset
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -831,6 +832,125 @@ class SelectionManagerTest {
         selectionManager.endSelection()
 
         assertEquals("ld!\nliv", selectionManager.getSelectedText(snapshot, scrollbackPosition = 1))
+    }
+
+    @Test
+    fun testSelectAllIncludesScrollbackAndHighlightsWhenScrolledUp() {
+        val snapshot = makeSnapshotWithScrollback(
+            scrollbackText = listOf("sb-0", "sb-1", "sb-2", "sb-3"),
+            screenText = listOf("sc-0", "sc-1", "sc-2"),
+            cols = 5,
+        )
+
+        selectionManager.selectAll(
+            rows = 3,
+            cols = 5,
+            scrollbackSize = snapshot.scrollback.size,
+            scrollbackPosition = 0,
+        )
+        assertEquals(SelectionRange(-4, 0, 2, 4), selectionManager.selectionRange)
+        assertEquals(
+            "sb-0\nsb-1\nsb-2\nsb-3\nsc-0\nsc-1\nsc-2",
+            selectionManager.getSelectedText(snapshot, scrollbackPosition = 0),
+        )
+
+        // Scroll up 3 rows into scrollback: Terminal's scrollback observer shifts both anchors +3.
+        selectionManager.shiftSelectionByRows(3)
+        assertEquals(SelectionRange(-1, 0, 5, 4), selectionManager.selectionRange)
+        for (row in 0 until 3) {
+            assertTrue("Visible scrollback row $row must stay highlighted", selectionManager.isCellSelected(row, 0))
+            assertTrue("Visible scrollback row $row must stay highlighted", selectionManager.isCellSelected(row, 3))
+        }
+        assertEquals(
+            "sb-0\nsb-1\nsb-2\nsb-3\nsc-0\nsc-1\nsc-2",
+            selectionManager.getSelectedText(snapshot, scrollbackPosition = 3),
+        )
+    }
+
+    @Test
+    fun testSelectAllWhileScrolledBackCoversEntireBuffer() {
+        val snapshot = makeSnapshotWithScrollback(
+            scrollbackText = listOf("sb-0", "sb-1", "sb-2", "sb-3"),
+            screenText = listOf("sc-0", "sc-1", "sc-2"),
+            cols = 5,
+        )
+
+        selectionManager.selectAll(
+            rows = 3,
+            cols = 5,
+            scrollbackSize = snapshot.scrollback.size,
+            scrollbackPosition = 2,
+        )
+        assertEquals(SelectionRange(-2, 0, 4, 4), selectionManager.selectionRange)
+        assertEquals(
+            "sb-0\nsb-1\nsb-2\nsb-3\nsc-0\nsc-1\nsc-2",
+            selectionManager.getSelectedText(snapshot, scrollbackPosition = 2),
+        )
+    }
+
+    @Test
+    fun testSelectAllVisibleSelectsViewportOnly() {
+        val snapshot = makeSnapshotWithScrollback(
+            scrollbackText = listOf("sb-0", "sb-1", "sb-2", "sb-3"),
+            screenText = listOf("sc-0", "sc-1", "sc-2"),
+            cols = 5,
+        )
+
+        selectionManager.selectAllVisible(rows = 3, cols = 5)
+        assertEquals(SelectionRange(0, 0, 2, 4), selectionManager.selectionRange)
+        assertEquals(
+            "sb-2\nsb-3\nsc-0",
+            selectionManager.getSelectedText(snapshot, scrollbackPosition = 2),
+        )
+    }
+
+    @Test
+    fun testClampToDimensionsPreservesScrolledEndRowAndScrollbackStart() {
+        selectionManager.selectAll(rows = 24, cols = 80, scrollbackSize = 50, scrollbackPosition = 10)
+        assertEquals(SelectionRange(-40, 0, 33, 79), selectionManager.selectionRange)
+
+        selectionManager.clampToDimensions(rows = 16, cols = 80, scrollbackPosition = 10)
+        assertEquals(SelectionRange(-40, 0, 25, 79), selectionManager.selectionRange)
+    }
+
+    @Test
+    fun testIsTouchingHandleIgnoresOffViewportAnchors() {
+        val offscreenRange = SelectionRange(-1, 0, 24, 79)
+        assertEquals(
+            Pair(false, false),
+            isTouchingHandle(
+                touchPos = Offset(5f, 5f),
+                range = offscreenRange,
+                charWidth = 10f,
+                charHeight = 20f,
+                hitRadius = 60f,
+                rows = 24,
+            ),
+        )
+        assertEquals(
+            Pair(false, false),
+            isTouchingHandle(
+                touchPos = Offset(795f, 475f),
+                range = offscreenRange,
+                charWidth = 10f,
+                charHeight = 20f,
+                hitRadius = 60f,
+                rows = 24,
+            ),
+        )
+
+        val visibleRange = SelectionRange(0, 0, 23, 79)
+        assertEquals(
+            Pair(true, false),
+            isTouchingHandle(
+                touchPos = Offset(5f, 0f),
+                range = visibleRange,
+                charWidth = 10f,
+                charHeight = 20f,
+                hitRadius = 60f,
+                rows = 24,
+            ),
+        )
     }
 
     private fun makeTwoLineSnapshot(first: String, second: String): TerminalSnapshot {
