@@ -39,6 +39,24 @@ int main(void) {
   vterm_set_size(vt, rows, 12);   /* narrower */
   fprintf(stderr, "survived resize 2\n");
   vterm_free(vt);
+
+  /* Excess CSI parameters/subparameters, numeric clamp, fresh REP, and
+   * resize-invalidated DECSTBM/DECSLRM scroll regions under ASan. */
+  vt = vterm_new(10, 40);
+  vterm_set_utf8(vt, 1);
+  screen = vterm_obtain_screen(vt);
+  vterm_screen_set_callbacks(screen, &cbs, NULL);
+  vterm_screen_reset(screen, 1);
+  vterm_input_write(vt, "\x1b[9b", 4);
+  vterm_input_write(vt, "\x1b[;;;;;;;;;;;;;;;;;;;;;m", 24);
+  vterm_input_write(vt, "\x1b[:::::::::::::::::::::m", 24);
+  vterm_input_write(vt, "\x1b[999999999999999999999999999999999999;3m", 41);
+  vterm_input_write(vt, "\x1b]99999999999999999999999999;ok\x07", 32);
+  vterm_input_write(vt, "\x1b[5;9r", 6);
+  vterm_set_size(vt, 3, 40);
+  vterm_input_write(vt, "\x1b[5S\x1b[5T\x1b[3;1HX\nY", 17);
+  vterm_free(vt);
+
   fprintf(stderr, "no crash\n");
   return 0;
 }

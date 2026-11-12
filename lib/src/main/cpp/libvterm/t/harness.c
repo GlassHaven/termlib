@@ -173,10 +173,13 @@ static int parser_csi(const char *leader, const long args[], int argcount, const
   for(int i = 0; i < argcount; i++) {
     char sep = i ? ',' : ' ';
 
-    if(args[i] == CSI_ARG_MISSING)
+    if(CSI_ARG_IS_MISSING(args[i]))
       printf("%c*", sep);
     else
-      printf("%c%ld%s", sep, CSI_ARG(args[i]), CSI_ARG_HAS_MORE(args[i]) ? "+" : "");
+      printf("%c%ld", sep, CSI_ARG(args[i]));
+
+    if(CSI_ARG_HAS_MORE(args[i]))
+      printf("+");
   }
 
   if(intermed && intermed[0]) {

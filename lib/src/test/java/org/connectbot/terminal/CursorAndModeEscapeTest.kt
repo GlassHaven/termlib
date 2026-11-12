@@ -276,4 +276,49 @@ class CursorAndModeEscapeTest {
             after.lines[0].text.trimEnd() == "protected row 0",
         )
     }
+
+    // -----------------------------------------------------------------------
+    // Parser bounds, REP initial state, and resize-invalidated scroll regions
+    // -----------------------------------------------------------------------
+
+    @Test
+    fun testExcessAndOverflowingCsiArgsDoNotCorruptParserCallbacks() = runBlocking {
+        val emulator = TerminalEmulatorFactory.create(initialRows = 10, initialCols = 40)
+        val impl = emulator as TerminalEmulatorImpl
+
+        emulator.send("\u001B[;;;;;;;;;;;;;;;;;;;;;m")
+        emulator.send("\u001B[:::::::::::::::::::::m")
+        emulator.send("\u001B[9999999999999999999999999999999999999999;3m")
+        emulator.send("\u001B]99999999999999999999999999;ignored\u0007OK")
+
+        val after = getSnapshot(impl)
+        assertEquals("OK", after.lines[0].text.trimEnd())
+    }
+
+    @Test
+    fun testRepBeforeAnyGraphicCharacterIsIgnored() = runBlocking {
+        val emulator = TerminalEmulatorFactory.create(initialRows = 10, initialCols = 40)
+        val impl = emulator as TerminalEmulatorImpl
+
+        emulator.send("\u001B[9bOK")
+
+        val after = getSnapshot(impl)
+        assertEquals("OK", after.lines[0].text.trimEnd())
+        assertEquals(0, after.cursorRow)
+        assertEquals(2, after.cursorCol)
+    }
+
+    @Test
+    fun testResizeSmallerThanScrollRegionResetsInvalidatedRegion() = runBlocking {
+        val emulator = TerminalEmulatorFactory.create(initialRows = 10, initialCols = 40)
+        val impl = emulator as TerminalEmulatorImpl
+
+        emulator.send("\u001B[5;9r")
+        emulator.resize(newRows = 3, newCols = 40)
+        emulator.send("\u001B[5S\u001B[5T\u001B[3;1HX\r\nY")
+
+        val after = getSnapshot(impl)
+        assertEquals("X", after.lines[1].text.trimEnd())
+        assertEquals("Y", after.lines[2].text.trimEnd())
+    }
 }
