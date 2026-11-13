@@ -1259,7 +1259,19 @@ void Terminal::invokePushScrollbackLine(int cols, const VTermScreenCell* cells, 
 #define CELL_JNI_EXCEPTION_BREAK(env) \
     do { if ((env)->ExceptionCheck()) { (env)->ExceptionDescribe(); (env)->ExceptionClear(); break; } } while (0)
 
-    for (int i = 0; i < cols; i++) {
+    // Unwritten cells at the right margin carry chars[0] == 0 (distinct from an
+    // explicit 0x20 space), e.g. when a double-width glyph wraps early from
+    // cols-1 onto col 0 of the next row. Omit trailing unwritten cells on
+    // soft-wrapped rows so rejoining or widening scrollback never inserts
+    // phantom spaces.
+    int effectiveCols = cols;
+    if (softWrapped) {
+        while (effectiveCols > 0 && cells[effectiveCols - 1].chars[0] == 0) {
+            effectiveCols--;
+        }
+    }
+
+    for (int i = 0; i < effectiveCols; i++) {
         const VTermScreenCell& cell = cells[i];
 
         // Get the primary character and handle surrogate pairs

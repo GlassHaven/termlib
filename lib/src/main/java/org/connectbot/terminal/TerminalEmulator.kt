@@ -744,6 +744,7 @@ internal class TerminalEmulatorImpl(
     private val scrollback = mutableListOf<TerminalLine>()
     private val maxScrollbackLines: Int = maxScrollbackLines.coerceAtLeast(0)
     private var scrollbackEvictedCount: Long = 0L
+    private var scrollbackPushGeneration: Long = 0L
 
     // Cached immutable copy of scrollback - only recreate when scrollback changes
     private var scrollbackSnapshot: List<TerminalLine> = emptyList()
@@ -865,6 +866,12 @@ internal class TerminalEmulatorImpl(
      */
     override fun resize(newRows: Int, newCols: Int): Unit = synchronized(configLock) {
         if (closed) return
+        val pushGenBefore = synchronized(damageLock) {
+            if (newCols > 0 && newCols != cols && scrollback.isNotEmpty()) {
+                reflowScrollbackLocked(newCols)
+            }
+            scrollbackPushGeneration
+        }
         whenOpen("resize") { terminalNative.resize(newRows, newCols) }
         if (closed) return
 
@@ -873,6 +880,9 @@ internal class TerminalEmulatorImpl(
         synchronized(damageLock) {
             oldRows = rows
             oldCols = cols
+            if (newCols > 0 && newCols != oldCols && scrollbackPushGeneration != pushGenBefore && scrollback.isNotEmpty()) {
+                reflowScrollbackLocked(newCols)
+            }
             rows = newRows
             cols = newCols
             resizeGeneration++
@@ -1240,6 +1250,7 @@ internal class TerminalEmulatorImpl(
             val line = TerminalLine(row = -1, cells = cellList, softWrapped = softWrapped, semanticSegments = line0Segments)
 
             scrollback.add(line)
+            scrollbackPushGeneration++
             if (scrollback.size > maxScrollbackLines) {
                 scrollback.removeAt(0)
                 scrollbackEvictedCount++
@@ -1286,6 +1297,160 @@ internal class TerminalEmulatorImpl(
         return 0
     }
 
+    /**
+     * Re-wrap [scrollback] chains to [newCols] display columns under [damageLock].
+     *
+     * Adjacent entries connected by [TerminalLine.softWrapped] are joined into a
+     * single logical chain and re-split at [newCols] (honoring fullwidth glyphs
+     * and preserving/coalescing [SemanticSegment] column ranges). If the final
+     * entry in [scrollback] has `softWrapped = true` (its continuation tail lives
+     * on row 0 of the active screen), that trailing `softWrapped = true` flag is
+     * preserved on the re-wrapped tail chunk.
+     */
+    private fun reflowScrollbackLocked(newCols: Int) {
+        if (newCols <= 0 || scrollback.isEmpty()) return
+        val defaultBg = currentDefaultBackground
+        val maxCellWidth = newCols.coerceIn(1, 2)
+
+        fun TerminalLine.Cell.isTrailingBlank(): Boolean = char == ' ' &&
+            combiningChars.isEmpty() &&
+            !isImagePlaceholder &&
+            bgColor == defaultBg &&
+            !reverse &&
+            !strike &&
+            underline == 0
+
+        val rebuilt = ArrayList<TerminalLine>(scrollback.size)
+        var i = 0
+        while (i < scrollback.size) {
+            var chainEnd = i
+            while (chainEnd < scrollback.size - 1 && scrollback[chainEnd].softWrapped) {
+                chainEnd++
+            }
+            val chainTrailingSoftWrap = scrollback[chainEnd].softWrapped
+
+            val chainCells = ArrayList<TerminalLine.Cell>()
+            val chainSegments = ArrayList<SemanticSegment>()
+
+            for (idx in i..chainEnd) {
+                val srcLine = scrollback[idx]
+                val effectiveCount = if (idx == chainEnd && !chainTrailingSoftWrap) {
+                    val segMaxEnd = srcLine.semanticSegments
+                        .maxOfOrNull { it.endCol }
+                        ?.coerceIn(0, srcLine.cells.size)
+                        ?: 0
+                    val lastContent = srcLine.cells.indexOfLast { !it.isTrailingBlank() } + 1
+                    lastContent.coerceAtLeast(segMaxEnd)
+                } else {
+                    srcLine.cells.size
+                }
+
+                val cellBase = chainCells.size
+                if (effectiveCount > 0) {
+                    chainCells.addAll(srcLine.cells.subList(0, effectiveCount))
+                }
+                for (seg in srcLine.semanticSegments) {
+                    val s = seg.startCol.coerceIn(0, effectiveCount)
+                    val e = seg.endCol.coerceIn(s, effectiveCount)
+                    if (e > s || seg.startCol == seg.endCol) {
+                        val mappedStart = cellBase + s
+                        val mappedEnd = cellBase + e
+                        val prev = chainSegments.lastOrNull()
+                        if (prev != null &&
+                            e > s &&
+                            prev.endCol > prev.startCol &&
+                            prev.endCol == mappedStart &&
+                            prev.semanticType == seg.semanticType &&
+                            prev.metadata == seg.metadata &&
+                            prev.promptId == seg.promptId
+                        ) {
+                            chainSegments[chainSegments.lastIndex] = prev.copy(endCol = mappedEnd)
+                        } else {
+                            chainSegments.add(seg.copy(startCol = mappedStart, endCol = mappedEnd))
+                        }
+                    }
+                }
+            }
+
+            if (chainCells.isEmpty()) {
+                rebuilt.add(
+                    TerminalLine(
+                        row = -1,
+                        cells = emptyList(),
+                        softWrapped = chainTrailingSoftWrap,
+                        semanticSegments = chainSegments,
+                    ),
+                )
+            } else {
+                val chunkBounds = ArrayList<IntRange>()
+                var chunkStart = 0
+                var colInChunk = 0
+                for (cellIdx in chainCells.indices) {
+                    val w = chainCells[cellIdx].width.coerceIn(1, maxCellWidth)
+                    if (colInChunk + w > newCols && colInChunk > 0) {
+                        chunkBounds.add(chunkStart until cellIdx)
+                        chunkStart = cellIdx
+                        colInChunk = 0
+                    }
+                    colInChunk += w
+                }
+                chunkBounds.add(chunkStart until chainCells.size)
+
+                for ((chunkIdx, range) in chunkBounds.withIndex()) {
+                    val cStart = range.first
+                    val cEnd = range.last + 1
+                    val isLastChunk = chunkIdx == chunkBounds.lastIndex
+                    val chunkSegs = if (chainSegments.isEmpty()) {
+                        emptyList()
+                    } else {
+                        chainSegments.mapNotNull { seg ->
+                            if (seg.startCol < seg.endCol) {
+                                if (seg.startCol < cEnd && cStart < seg.endCol) {
+                                    seg.copy(
+                                        startCol = (seg.startCol - cStart).coerceAtLeast(0),
+                                        endCol = (seg.endCol - cStart).coerceAtMost(cEnd - cStart),
+                                    )
+                                } else {
+                                    null
+                                }
+                            } else if (seg.startCol in cStart until cEnd || (isLastChunk && seg.startCol == cEnd)) {
+                                val localPos = seg.startCol - cStart
+                                seg.copy(startCol = localPos, endCol = localPos)
+                            } else {
+                                null
+                            }
+                        }
+                    }
+                    rebuilt.add(
+                        TerminalLine(
+                            row = -1,
+                            cells = chainCells.subList(cStart, cEnd).toList(),
+                            softWrapped = if (!isLastChunk) true else chainTrailingSoftWrap,
+                            semanticSegments = chunkSegs,
+                        ),
+                    )
+                }
+            }
+
+            i = chainEnd + 1
+        }
+
+        scrollback.clear()
+        if (maxScrollbackLines == 0) {
+            scrollbackEvictedCount += rebuilt.size
+            imageStore.trimHistory(0)
+        } else if (rebuilt.size > maxScrollbackLines) {
+            val overflow = rebuilt.size - maxScrollbackLines
+            scrollback.addAll(rebuilt.subList(overflow, rebuilt.size))
+            scrollbackEvictedCount += overflow
+            imageStore.trimHistory(maxScrollbackLines)
+        } else {
+            scrollback.addAll(rebuilt)
+        }
+        scrollbackDirty = true
+        propertyChanged = true
+    }
+
     override fun clearScrollback(): Int {
         synchronized(damageLock) {
             imageStore.trimHistory(0)
@@ -1323,12 +1488,10 @@ internal class TerminalEmulatorImpl(
             val totalDisplayCols = contentCells.sumOf { it.width.coerceIn(1, maxCellWidth) }
             if (cols > 0 && totalDisplayCols > cols) {
                 var chunkStartIdx = 0
-                var prevChunkCols = 0
                 var colInChunk = 0
                 for (idx in contentCells.indices) {
                     val w = contentCells[idx].width.coerceIn(1, maxCellWidth)
                     if (colInChunk + w > cols && colInChunk > 0) {
-                        prevChunkCols = colInChunk
                         chunkStartIdx = idx
                         colInChunk = 0
                     }
@@ -1338,7 +1501,7 @@ internal class TerminalEmulatorImpl(
                     scrollback.add(
                         line.copy(
                             cells = contentCells.subList(0, chunkStartIdx).toList(),
-                            softWrapped = (prevChunkCols == cols),
+                            softWrapped = true,
                         ),
                     )
                     line = line.copy(cells = contentCells.subList(chunkStartIdx, contentCells.size).toList())
@@ -1353,7 +1516,7 @@ internal class TerminalEmulatorImpl(
             val defaultBgG = (currentDefaultBackground.green * 255).toInt()
             val defaultBgB = (currentDefaultBackground.blue * 255).toInt()
             fun blankScreenCell() = ScreenCell(
-                char = ' ',
+                char = '\u0000',
                 fgRed = defaultFgR,
                 fgGreen = defaultFgG,
                 fgBlue = defaultFgB,

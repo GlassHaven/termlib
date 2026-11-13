@@ -55,7 +55,7 @@ val cmakeBuildHost by tasks.registering(Exec::class) {
     group = "build"
     description = "Build libjni_cb_term for the host JVM"
     dependsOn(cmakeConfigureHost)
-    inputs.dir(hostJniDir)
+    inputs.dir(cppSourceDir)
     commandLine(
         "cmake",
         "--build",
