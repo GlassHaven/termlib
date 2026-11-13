@@ -146,6 +146,7 @@ private enum class GestureType {
     Undetermined,
     Scroll,
     HorizontalScroll,
+    SingleStepSwipe,
     Selection,
     Zoom,
     HandleDrag,
@@ -203,12 +204,35 @@ private const val CALLBACK_LONG_PRESS_MS = 400L
 private const val MOUSE_MODE_LONG_PRESS_MS = 900L
 
 /**
- * How long a press must be held before it becomes a Haven text selection.
- * [mouseMode] true means the remote app asked for the mouse, so clicks belong
- * to it and the press gets [MOUSE_MODE_LONG_PRESS_MS] of grace; otherwise the
- * platform's own timeout applies. Pure so the policy is testable (#435).
+ * Hold duration required to enter Haven text selection when latched swipe-gesture
+ * mode is active: long enough that pausing before a drag or performing a
+ * double-touch (`touch -> release -> touch -> move -> hold`) does not trigger
+ * text selection early, while `touch + hold + delay` still opens selection.
  */
-internal fun longPressDelayMs(mouseMode: Boolean, systemLongPressMs: Long): Long = if (mouseMode) MOUSE_MODE_LONG_PRESS_MS else systemLongPressMs
+private const val SWIPE_MODE_LONG_PRESS_MS = 1200L
+
+/**
+ * Maximum lift-to-touch gap (ms) for recognizing the second touch of a
+ * double-touch scroll-on-hold gesture (`touch -> release -> touch -> move -> hold`).
+ */
+private const val DOUBLE_TOUCH_TIMEOUT_MS = 500L
+
+/**
+ * How long a press must be held before it becomes a Haven text selection.
+ * [swipeMode] true gives [SWIPE_MODE_LONG_PRESS_MS] so swipe/double-touch
+ * gestures aren't stolen by early selection; [mouseMode] true gives
+ * [MOUSE_MODE_LONG_PRESS_MS] of grace (#435); otherwise the platform's own
+ * timeout applies. Pure so the policy is testable (#435).
+ */
+internal fun longPressDelayMs(
+    mouseMode: Boolean,
+    systemLongPressMs: Long,
+    swipeMode: Boolean = false,
+): Long = when {
+    swipeMode -> maxOf(SWIPE_MODE_LONG_PRESS_MS, systemLongPressMs)
+    mouseMode -> maxOf(MOUSE_MODE_LONG_PRESS_MS, systemLongPressMs)
+    else -> systemLongPressMs
+}
 
 /**
  * Whether a tap landing while a selection is showing is spent dismissing that
@@ -1982,9 +2006,23 @@ internal fun TerminalWithAccessibility(
                             var gestureType: GestureType = GestureType.Undetermined
                             val down = awaitFirstDown(requireUnconsumed = false)
                             var upUptimeMillis = down.uptimeMillis
+                            val vertSwipeMode =
+                                gestureCallback?.verticalSingleTouchSwipeMode()
+                                    ?: SingleTouchSwipeMode.Default
+                            val horizSwipeMode =
+                                gestureCallback?.horizontalSingleTouchSwipeMode()
+                                    ?: SingleTouchSwipeMode.Default
+                            val swipeModeActive =
+                                vertSwipeMode != SingleTouchSwipeMode.Default ||
+                                    horizSwipeMode != SingleTouchSwipeMode.Default
+                            val doubleTouchTimeoutMs = if (swipeModeActive) {
+                                maxOf(viewConfiguration.doubleTapTimeoutMillis, DOUBLE_TOUCH_TIMEOUT_MS)
+                            } else {
+                                viewConfiguration.doubleTapTimeoutMillis
+                            }
                             val isDoubleTouch = tapTracker.lastUpTimestamp >= 0L &&
                                 (down.uptimeMillis - tapTracker.lastUpTimestamp) in
-                                0L..viewConfiguration.doubleTapTimeoutMillis
+                                0L..doubleTouchTimeoutMs
 
                             // Touch-sampling helpers (ported from upstream 6209b978):
                             // edge-reach keeps the outermost cells selectable without
@@ -2217,6 +2255,7 @@ internal fun TerminalWithAccessibility(
                                         thresholdMs = longPressDelayMs(
                                             mouseMode = currentMouseModeActive,
                                             systemLongPressMs = viewConfiguration.longPressTimeoutMillis,
+                                            swipeMode = swipeModeActive,
                                         ),
                                         mouseMode = currentMouseModeActive,
                                         movedPx = gestureMaxMovePx,
@@ -2233,6 +2272,10 @@ internal fun TerminalWithAccessibility(
                             val callbackLongPressJob: kotlinx.coroutines.Job? = null
 
                             val longPressJob = launch {
+                                // In swipe-gesture mode, the second touch of a double-touch
+                                // (`touch -> release -> touch -> move -> hold`) is armed for
+                                // scroll-on-hold, so never hijack it into text selection.
+                                if (isDoubleTouch && swipeModeActive) return@launch
                                 // #435: a mouse-mode app owns clicks, so give the
                                 // press longer before we steal it for a selection —
                                 // otherwise a careful tap on a zellij/tmux tab never
@@ -2241,6 +2284,7 @@ internal fun TerminalWithAccessibility(
                                     longPressDelayMs(
                                         mouseMode = currentMouseModeActive,
                                         systemLongPressMs = viewConfiguration.longPressTimeoutMillis,
+                                        swipeMode = swipeModeActive,
                                     ),
                                 )
                                 // Haven-local text selection on long-press. Previously
@@ -2414,6 +2458,12 @@ internal fun TerminalWithAccessibility(
                             // finger jitter doesn't flicker the direction.
                             var swipeHoldDirection = SwipeHoldDirection.Up
                             var swipeHoldFlipAccum = 0f
+                            // Single-step-with-reversal state: emits one step on
+                            // classification, nothing further along the same direction,
+                            // and one opposite step each time counter-travel exceeds touch slop.
+                            var singleStepDirection = SwipeHoldDirection.Up
+                            var singleStepReverseAccum = 0f
+                            var singleStepClassifiedOnThisEvent = false
                             // Last cell coordinates dispatched as a MouseDrag(Move),
                             // used to quantize per-pixel events down to per-cell.
                             var lastMouseDragCol = -1
@@ -2571,10 +2621,9 @@ internal fun TerminalWithAccessibility(
                                             // Plain one-finger swipe (no long-press).
                                             val absDx = kotlin.math.abs(totalDx)
                                             val absDy = kotlin.math.abs(totalDy)
-                                            val rowQuantumMode =
-                                                gestureCallback?.prefersRowHeightScrollQuantum() == true
-                                            val canOfferHold = !rowQuantumMode || isDoubleTouch
                                             if (absDx > absDy) {
+                                                val canOfferHold =
+                                                    horizSwipeMode == SingleTouchSwipeMode.Default || isDoubleTouch
                                                 longPressJob.cancel()
                                                 callbackLongPressJob?.cancel()
                                                 if (selectionManager.mode != SelectionMode.NONE) {
@@ -2585,23 +2634,37 @@ internal fun TerminalWithAccessibility(
                                                     swipeHoldDirection = holdDir
                                                     swipeHoldFlipAccum = 0f
                                                     gestureType = GestureType.SwipeHold
-                                                } else if (rowQuantumMode) {
-                                                    accumulatedScrollX = totalDx - dragAmount.x
-                                                    gestureType = GestureType.HorizontalScroll
-                                                    touchScrollActive = true
                                                 } else {
-                                                    // Horizontal drag — let pager handle
-                                                    isHorizontalDrag = true
+                                                    when (horizSwipeMode) {
+                                                        SingleTouchSwipeMode.SingleStepWithReversal -> {
+                                                            singleStepDirection = holdDir
+                                                            singleStepReverseAccum = 0f
+                                                            singleStepClassifiedOnThisEvent = true
+                                                            gestureType = GestureType.SingleStepSwipe
+                                                            touchScrollActive = true
+                                                            gestureCallback?.onHorizontalScroll(
+                                                                downCol,
+                                                                downRow,
+                                                                scrollLeft = holdDir == SwipeHoldDirection.Right,
+                                                            )
+                                                        }
+
+                                                        SingleTouchSwipeMode.TrackFingerByRowHeight -> {
+                                                            accumulatedScrollX = totalDx - dragAmount.x
+                                                            gestureType = GestureType.HorizontalScroll
+                                                            touchScrollActive = true
+                                                        }
+
+                                                        SingleTouchSwipeMode.Default -> {
+                                                            // Horizontal drag — let pager handle
+                                                            isHorizontalDrag = true
+                                                        }
+                                                    }
                                                 }
                                             } else {
-                                                // Vertical swipe → Scroll. In mouse mode this
-                                                // forwards the wheel to the app, scrolling the
-                                                // multiplexer pane; with no callback it scrolls
-                                                // Haven's local scrollback. A copy-mode selection
-                                                // now needs an explicit long-press first
-                                                // (armMouseDrag above), so a one-finger swipe is
-                                                // always a scroll and the two no longer fight
-                                                // over the same gesture. (#186)
+                                                // Vertical swipe → Scroll / SingleStepSwipe / SwipeHold.
+                                                val canOfferHold =
+                                                    vertSwipeMode == SingleTouchSwipeMode.Default || isDoubleTouch
                                                 longPressJob.cancel()
                                                 callbackLongPressJob?.cancel()
                                                 val holdDir = if (totalDy < 0) SwipeHoldDirection.Up else SwipeHoldDirection.Down
@@ -2610,11 +2673,39 @@ internal fun TerminalWithAccessibility(
                                                     swipeHoldFlipAccum = 0f
                                                     gestureType = GestureType.SwipeHold
                                                 } else {
-                                                    if (rowQuantumMode) {
-                                                        accumulatedScrollY = totalDy - dragAmount.y
+                                                    when (vertSwipeMode) {
+                                                        SingleTouchSwipeMode.SingleStepWithReversal -> {
+                                                            singleStepDirection = holdDir
+                                                            singleStepReverseAccum = 0f
+                                                            singleStepClassifiedOnThisEvent = true
+                                                            gestureType = GestureType.SingleStepSwipe
+                                                            touchScrollActive = true
+                                                            val scrollUp = holdDir == SwipeHoldDirection.Down
+                                                            val consumed =
+                                                                gestureCallback?.onScroll(downCol, downRow, scrollUp)
+                                                                    ?: false
+                                                            if (!consumed) {
+                                                                val scrollDir = if (scrollUp) 1 else -1
+                                                                screenState.scrollBy(scrollDir)
+                                                                coroutineScope.launch {
+                                                                    scrollOffset.snapTo(
+                                                                        screenState.scrollbackPosition * baseCharHeight,
+                                                                    )
+                                                                }
+                                                            }
+                                                        }
+
+                                                        SingleTouchSwipeMode.TrackFingerByRowHeight -> {
+                                                            accumulatedScrollY = totalDy - dragAmount.y
+                                                            gestureType = GestureType.Scroll
+                                                            touchScrollActive = true
+                                                        }
+
+                                                        SingleTouchSwipeMode.Default -> {
+                                                            gestureType = GestureType.Scroll
+                                                            touchScrollActive = true
+                                                        }
                                                     }
-                                                    gestureType = GestureType.Scroll
-                                                    touchScrollActive = true
                                                 }
                                             }
                                         }
@@ -2740,7 +2831,8 @@ internal fun TerminalWithAccessibility(
 
                                     GestureType.Scroll -> {
                                         if (gestureCallback != null) {
-                                            val rowQuantumMode = gestureCallback.prefersRowHeightScrollQuantum()
+                                            val rowQuantumMode =
+                                                vertSwipeMode == SingleTouchSwipeMode.TrackFingerByRowHeight
                                             val quantum = if (rowQuantumMode) baseCharHeight else callbackScrollThreshold
                                             accumulatedScrollY += dragAmount.y
                                             while (kotlin.math.abs(accumulatedScrollY) >= quantum) {
@@ -2794,6 +2886,66 @@ internal fun TerminalWithAccessibility(
                                                 val row = ((change.position.y + keyboardCoveredPx) / baseCharHeight).toInt()
                                                     .coerceIn(0, screenState.snapshot.rows - 1)
                                                 gestureCallback.onHorizontalScroll(col, row, scrollLeft)
+                                            }
+                                        }
+                                    }
+
+                                    GestureType.SingleStepSwipe -> {
+                                        if (singleStepClassifiedOnThisEvent) {
+                                            singleStepClassifiedOnThisEvent = false
+                                        } else {
+                                            val axisDelta = when (singleStepDirection) {
+                                                SwipeHoldDirection.Up, SwipeHoldDirection.Down -> dragAmount.y
+                                                SwipeHoldDirection.Left, SwipeHoldDirection.Right -> dragAmount.x
+                                            }
+                                            val against = when (singleStepDirection) {
+                                                SwipeHoldDirection.Up, SwipeHoldDirection.Left -> axisDelta > 0f
+                                                SwipeHoldDirection.Down, SwipeHoldDirection.Right -> axisDelta < 0f
+                                            }
+                                            if (against) {
+                                                singleStepReverseAccum += kotlin.math.abs(axisDelta)
+                                                if (singleStepReverseAccum * singleStepReverseAccum > touchSlopSquared) {
+                                                    singleStepDirection = when (singleStepDirection) {
+                                                        SwipeHoldDirection.Up -> SwipeHoldDirection.Down
+                                                        SwipeHoldDirection.Down -> SwipeHoldDirection.Up
+                                                        SwipeHoldDirection.Left -> SwipeHoldDirection.Right
+                                                        SwipeHoldDirection.Right -> SwipeHoldDirection.Left
+                                                    }
+                                                    singleStepReverseAccum = 0f
+                                                    val col = (change.position.x / baseCharWidth).toInt()
+                                                        .coerceIn(0, screenState.snapshot.cols - 1)
+                                                    val row = ((change.position.y + keyboardCoveredPx) / baseCharHeight).toInt()
+                                                        .coerceIn(0, screenState.snapshot.rows - 1)
+                                                    when (singleStepDirection) {
+                                                        SwipeHoldDirection.Up, SwipeHoldDirection.Down -> {
+                                                            val scrollUp = singleStepDirection == SwipeHoldDirection.Down
+                                                            val consumed =
+                                                                gestureCallback?.onScroll(col, row, scrollUp)
+                                                                    ?: false
+                                                            if (!consumed) {
+                                                                val scrollDir = if (scrollUp) 1 else -1
+                                                                screenState.scrollBy(scrollDir)
+                                                                coroutineScope.launch {
+                                                                    scrollOffset.snapTo(
+                                                                        screenState.scrollbackPosition * baseCharHeight,
+                                                                    )
+                                                                }
+                                                            }
+                                                        }
+
+                                                        SwipeHoldDirection.Left, SwipeHoldDirection.Right -> {
+                                                            gestureCallback?.onHorizontalScroll(
+                                                                col,
+                                                                row,
+                                                                scrollLeft = singleStepDirection == SwipeHoldDirection.Right,
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            } else if (axisDelta != 0f) {
+                                                singleStepReverseAccum =
+                                                    (singleStepReverseAccum - kotlin.math.abs(axisDelta))
+                                                        .coerceAtLeast(0f)
                                             }
                                         }
                                     }
@@ -2859,7 +3011,7 @@ internal fun TerminalWithAccessibility(
                                     // flick when zero steps fired during the drag, so
                                     // multi-row drags never jump an extra row on release.
                                     val rowQuantumMode =
-                                        gestureCallback?.prefersRowHeightScrollQuantum() == true
+                                        vertSwipeMode == SingleTouchSwipeMode.TrackFingerByRowHeight
                                     val shouldFlush = gestureCallback != null && (
                                         if (rowQuantumMode) {
                                             rowQuantumStepsFired == 0 &&

@@ -56,6 +56,18 @@ interface TerminalGestureCallback {
     fun prefersRowHeightScrollQuantum(): Boolean = false
 
     /**
+     * Quantization policy for a single-touch vertical drag when not claimed as
+     * a double-touch [onSwipeHoldStart].
+     */
+    fun verticalSingleTouchSwipeMode(): SingleTouchSwipeMode = if (prefersRowHeightScrollQuantum()) SingleTouchSwipeMode.TrackFingerByRowHeight else SingleTouchSwipeMode.Default
+
+    /**
+     * Quantization policy for a single-touch horizontal drag when not claimed
+     * as a double-touch [onSwipeHoldStart].
+     */
+    fun horizontalSingleTouchSwipeMode(): SingleTouchSwipeMode = if (prefersRowHeightScrollQuantum()) SingleTouchSwipeMode.TrackFingerByRowHeight else SingleTouchSwipeMode.Default
+
+    /**
      * A one-finger swipe has just been classified, offered as a *held*
      * gesture before any [onScroll] quantization (#524). Return `true` to
      * claim it: the host then receives [onSwipeHold] whenever the finger
@@ -117,4 +129,19 @@ enum class SwipeHoldDirection {
     Down,
     Left,
     Right,
+}
+
+/**
+ * Quantization policy for a single-touch drag along one axis when
+ * [TerminalGestureCallback] is active.
+ */
+enum class SingleTouchSwipeMode {
+    /** Classic behavior: vertical uses `callbackScrollThreshold` (or hold); horizontal goes to host pager. */
+    Default,
+
+    /** Continuous TUI tracking: one step per terminal row height (`baseCharHeight`), no hold repeat. */
+    TrackFingerByRowHeight,
+
+    /** Command-line / horizontal stepping: at most one step per direction, reversing on counter-drag past touch slop. */
+    SingleStepWithReversal,
 }

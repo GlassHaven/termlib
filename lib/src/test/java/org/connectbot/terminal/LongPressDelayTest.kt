@@ -60,6 +60,19 @@ class LongPressDelayTest {
         assertEquals(1500L, longPressDelayMs(mouseMode = false, systemLongPressMs = 1500L))
     }
 
+    @Test
+    fun `swipe mode increases selection hold delay above system and mouse-mode timeouts`() {
+        val mouse = longPressDelayMs(mouseMode = true, systemLongPressMs = systemTimeout, swipeMode = false)
+        val swipePlain = longPressDelayMs(mouseMode = false, systemLongPressMs = systemTimeout, swipeMode = true)
+        val swipeMouse = longPressDelayMs(mouseMode = true, systemLongPressMs = systemTimeout, swipeMode = true)
+        assertTrue(
+            "swipe mode selection delay ($swipePlain) must exceed mouse-mode grace ($mouse)",
+            swipePlain > mouse,
+        )
+        assertEquals(swipePlain, swipeMouse)
+        assertEquals(1800L, longPressDelayMs(mouseMode = false, systemLongPressMs = 1800L, swipeMode = true))
+    }
+
     /**
      * Measured on-device: with a selection showing, two identical taps produced
      * only one SGR click on the wire — the first was spent dismissing the
