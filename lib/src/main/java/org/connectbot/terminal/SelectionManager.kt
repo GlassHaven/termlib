@@ -533,7 +533,7 @@ internal class SelectionManager {
         return Pair(start, end)
     }
 
-    private fun isBlankCell(cell: TerminalLine.Cell): Boolean = (cell.char == ' ' || cell.char == '\u0000') && cell.combiningChars.isEmpty()
+    private fun isBlankCell(cell: TerminalLine.Cell): Boolean = !cell.isImagePlaceholder && cell.renderableText() == null
 
     private fun lastContentCol(line: TerminalLine): Int {
         var last = line.cells.lastIndex
@@ -572,8 +572,7 @@ internal class SelectionManager {
                         // Build line text and trim trailing whitespace.
                         val lineText = buildString {
                             line.cells.forEach { cell ->
-                                append(cell.char)
-                                cell.combiningChars.forEach { append(it) }
+                                appendCopyableCell(cell)
                             }
                         }.trimEnd()
                         append(lineText)
@@ -593,9 +592,7 @@ internal class SelectionManager {
                         // Build line text and trim trailing whitespace
                         val lineText = buildString {
                             for (col in startCol..minOf(endCol, line.cells.lastIndex)) {
-                                val cell = line.cells[col]
-                                append(cell.char)
-                                cell.combiningChars.forEach { append(it) }
+                                appendCopyableCell(line.cells[col])
                             }
                         }.trimEnd()
                         append(lineText)

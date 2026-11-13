@@ -3801,12 +3801,8 @@ private fun DrawScope.drawLine(
         val baseFgColor = if (cell.reverse) cell.bgColor else cell.fgColor
 
         // Draw character
-        if ((cell.char != ' ' || cell.combiningChars.isNotEmpty()) && !cell.isImagePlaceholder) {
-            val text = buildString {
-                append(cell.char)
-                cell.combiningChars.forEach { append(it) }
-            }
-
+        val text = cell.renderableText()
+        if (text != null) {
             // Force high contrast for text on the selection background
             val fgColor = if (isSelected) selectionForegroundColor else baseFgColor
 

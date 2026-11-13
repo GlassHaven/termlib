@@ -222,3 +222,131 @@ internal data class TerminalLine(
  */
 internal val TerminalLine.Cell.isImagePlaceholder: Boolean
     get() = char == '\uDBFB' && combiningChars.firstOrNull() == '\uDEEE'
+
+/**
+ * True when [codepoint] is an invisible Unicode format control (Category Cf) that
+ * has no visual glyph in a character-cell terminal and does not participate in
+ * glyph shaping (ZWNJ U+200C, ZWJ U+200D, and emoji tag characters U+E0020..U+E007F
+ * are preserved so emoji ZWJ/flag sequences and cursive shaping work).
+ *
+ * Notably includes U+FFF9..U+FFFB (Interlinear Annotation Anchor/Separator/Terminator)
+ * and U+1D173..U+1D17A (Musical Symbol Begin/End Beam/Tie/Slur/Phrase): libvterm
+ * classifies them as zero-width combining codepoints attached to the preceding cell,
+ * and Unicode omits them from Default_Ignorable_Code_Point, so HarfBuzz/Minikin would
+ * otherwise draw a missing-glyph .notdef box one cell to the right (around the next
+ * cell's character).
+ */
+internal fun isNonRenderingFormatCodepoint(codepoint: Int): Boolean = when (codepoint) {
+    0x200B, // ZERO WIDTH SPACE
+    0x200E,
+    0x200F, // LRM, RLM
+    0xFEFF, // ZERO WIDTH NO-BREAK SPACE (BOM)
+    0xE0001, // LANGUAGE TAG
+    -> true
+
+    in 0x202A..0x202E, // Bidi embedding/override controls
+    in 0x2060..0x206F, // Word joiner, invisible operators, bidi isolates, deprecated format controls
+    in 0xFFF9..0xFFFB, // Interlinear annotation anchor/separator/terminator
+    in 0x1D173..0x1D17A, // Musical symbol beam/tie/slur/phrase controls
+    -> true
+
+    else -> false
+}
+
+internal fun TerminalLine.Cell.renderableText(): String? {
+    if (isImagePlaceholder) return null
+    if (combiningChars.isEmpty()) {
+        val c = char
+        if (c == ' ' || c == '\u0000' || isNonRenderingFormatCodepoint(c.code)) {
+            return null
+        }
+        return c.toString()
+    }
+
+    var needsFilter = char == '\u0000' || char.isHighSurrogate() || isNonRenderingFormatCodepoint(char.code)
+    if (!needsFilter) {
+        for (i in combiningChars.indices) {
+            val ch = combiningChars[i]
+            if (ch == '\u0000' || ch.isHighSurrogate() || isNonRenderingFormatCodepoint(ch.code)) {
+                needsFilter = true
+                break
+            }
+        }
+    }
+    if (!needsFilter) {
+        return buildString(1 + combiningChars.size) {
+            append(char)
+            for (i in combiningChars.indices) append(combiningChars[i])
+        }
+    }
+
+    val totalUnits = 1 + combiningChars.size
+    val filtered = buildString(totalUnits) {
+        var idx = 0
+        while (idx < totalUnits) {
+            val hi = if (idx == 0) char else combiningChars[idx - 1]
+            if (hi.isHighSurrogate() && idx + 1 < totalUnits) {
+                val lo = combiningChars[idx]
+                if (lo.isLowSurrogate()) {
+                    val cp = Character.toCodePoint(hi, lo)
+                    if (!isNonRenderingFormatCodepoint(cp)) {
+                        append(hi)
+                        append(lo)
+                    }
+                    idx += 2
+                    continue
+                }
+            }
+            if (hi != '\u0000' && !isNonRenderingFormatCodepoint(hi.code)) {
+                append(hi)
+            }
+            idx += 1
+        }
+    }
+    if (filtered.isEmpty() || filtered == " ") {
+        return null
+    }
+    return filtered
+}
+
+/**
+ * Append [cell]'s plain-text representation for clipboard copy: inline-image
+ * placeholders copy as a space, and non-Default_Ignorable annotation/scoping
+ * anchors (U+FFF9..U+FFFB, U+1D173..U+1D17A) are omitted per Unicode §23.8 so
+ * pasted text does not render .notdef boxes in target apps.
+ */
+internal fun StringBuilder.appendCopyableCell(cell: TerminalLine.Cell) {
+    if (cell.isImagePlaceholder) {
+        append(' ')
+        return
+    }
+    val extra = cell.combiningChars
+    if (extra.isEmpty()) {
+        val c = cell.char
+        if (c.code !in 0xFFF9..0xFFFB) {
+            append(c)
+        }
+        return
+    }
+    val totalUnits = 1 + extra.size
+    var idx = 0
+    while (idx < totalUnits) {
+        val hi = if (idx == 0) cell.char else extra[idx - 1]
+        if (hi.isHighSurrogate() && idx + 1 < totalUnits) {
+            val lo = extra[idx]
+            if (lo.isLowSurrogate()) {
+                val cp = Character.toCodePoint(hi, lo)
+                if (cp !in 0x1D173..0x1D17A) {
+                    append(hi)
+                    append(lo)
+                }
+                idx += 2
+                continue
+            }
+        }
+        if (hi.code !in 0xFFF9..0xFFFB) {
+            append(hi)
+        }
+        idx += 1
+    }
+}
