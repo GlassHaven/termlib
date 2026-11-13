@@ -145,6 +145,7 @@ private val logger = LoggerFactory.getLogger("org.connectbot.terminal.Terminal")
 private enum class GestureType {
     Undetermined,
     Scroll,
+    HorizontalScroll,
     Selection,
     Zoom,
     HandleDrag,
@@ -1362,7 +1363,8 @@ internal fun TerminalWithAccessibility(
     // Stored as plain vars in a remembered holder so writes don't trigger recomposition.
     val tapTracker = remember(terminalEmulator) {
         object {
-            var lastTimestamp = 0L
+            var lastTimestamp = -1L
+            var lastUpTimestamp = -1L
             var lastPosition = Offset.Zero
         }
     }
@@ -1979,6 +1981,10 @@ internal fun TerminalWithAccessibility(
                         awaitEachGesture {
                             var gestureType: GestureType = GestureType.Undetermined
                             val down = awaitFirstDown(requireUnconsumed = false)
+                            var upUptimeMillis = down.uptimeMillis
+                            val isDoubleTouch = tapTracker.lastUpTimestamp >= 0L &&
+                                (down.uptimeMillis - tapTracker.lastUpTimestamp) in
+                                0L..viewConfiguration.doubleTapTimeoutMillis
 
                             // Touch-sampling helpers (ported from upstream 6209b978):
                             // edge-reach keeps the outermost cells selectable without
@@ -2303,6 +2309,8 @@ internal fun TerminalWithAccessibility(
                                 val probed = awaitPointerEvent()
                                 if (probed.changes.all { !it.pressed }) {
                                     releasedDuringProbe = true
+                                    upUptimeMillis = probed.changes.firstOrNull()?.uptimeMillis
+                                        ?: down.uptimeMillis
                                 }
                                 probed.changes.firstOrNull { it.id != down.id && it.pressed }
                             }
@@ -2396,6 +2404,8 @@ internal fun TerminalWithAccessibility(
                             // 5. Event loop for single-touch gestures
                             // Track accumulated scroll for callback quantization
                             var accumulatedScrollY = 0f
+                            var accumulatedScrollX = 0f
+                            var rowQuantumStepsFired = 0
                             // Track whether this is a horizontal drag (tab swipe)
                             var isHorizontalDrag = false
                             // Held-swipe state (#524): the current direction and
@@ -2501,7 +2511,11 @@ internal fun TerminalWithAccessibility(
                             while (!releasedDuringProbe) {
                                 val event: PointerEvent =
                                     awaitPointerEvent(PointerEventPass.Main)
-                                if (event.changes.all { !it.pressed }) break
+                                if (event.changes.all { !it.pressed }) {
+                                    upUptimeMillis = event.changes.firstOrNull()?.uptimeMillis
+                                        ?: upUptimeMillis
+                                    break
+                                }
 
                                 val change = event.changes.first()
                                 // Farthest the finger strayed from where it landed —
@@ -2557,21 +2571,24 @@ internal fun TerminalWithAccessibility(
                                             // Plain one-finger swipe (no long-press).
                                             val absDx = kotlin.math.abs(totalDx)
                                             val absDy = kotlin.math.abs(totalDy)
+                                            val rowQuantumMode =
+                                                gestureCallback?.prefersRowHeightScrollQuantum() == true
+                                            val canOfferHold = !rowQuantumMode || isDoubleTouch
                                             if (absDx > absDy) {
                                                 longPressJob.cancel()
                                                 callbackLongPressJob?.cancel()
                                                 if (selectionManager.mode != SelectionMode.NONE) {
                                                     selectionManager.clearSelection()
                                                 }
-                                                // Offer the swipe as a held gesture first
-                                                // (#524): a host in swipe-arrows mode claims
-                                                // it and owns ←/→ key repeat; unclaimed
-                                                // horizontal drags stay with the pager.
                                                 val holdDir = if (totalDx > 0) SwipeHoldDirection.Right else SwipeHoldDirection.Left
-                                                if (gestureCallback?.onSwipeHoldStart(downCol, downRow, holdDir) == true) {
+                                                if (canOfferHold && gestureCallback?.onSwipeHoldStart(downCol, downRow, holdDir) == true) {
                                                     swipeHoldDirection = holdDir
                                                     swipeHoldFlipAccum = 0f
                                                     gestureType = GestureType.SwipeHold
+                                                } else if (rowQuantumMode) {
+                                                    accumulatedScrollX = totalDx - dragAmount.x
+                                                    gestureType = GestureType.HorizontalScroll
+                                                    touchScrollActive = true
                                                 } else {
                                                     // Horizontal drag — let pager handle
                                                     isHorizontalDrag = true
@@ -2587,14 +2604,15 @@ internal fun TerminalWithAccessibility(
                                                 // over the same gesture. (#186)
                                                 longPressJob.cancel()
                                                 callbackLongPressJob?.cancel()
-                                                // Offer as a held gesture first (#524);
-                                                // unclaimed swipes keep quantized Scroll.
                                                 val holdDir = if (totalDy < 0) SwipeHoldDirection.Up else SwipeHoldDirection.Down
-                                                if (gestureCallback?.onSwipeHoldStart(downCol, downRow, holdDir) == true) {
+                                                if (canOfferHold && gestureCallback?.onSwipeHoldStart(downCol, downRow, holdDir) == true) {
                                                     swipeHoldDirection = holdDir
                                                     swipeHoldFlipAccum = 0f
                                                     gestureType = GestureType.SwipeHold
                                                 } else {
+                                                    if (rowQuantumMode) {
+                                                        accumulatedScrollY = totalDy - dragAmount.y
+                                                    }
                                                     gestureType = GestureType.Scroll
                                                     touchScrollActive = true
                                                 }
@@ -2722,15 +2740,13 @@ internal fun TerminalWithAccessibility(
 
                                     GestureType.Scroll -> {
                                         if (gestureCallback != null) {
-                                            // Quantized scroll: accumulate drag and fire the
-                                            // callback for each quantum crossed. The quantum is
-                                            // the host-scaled callbackScrollThreshold — coarser
-                                            // in swipe-arrows mode (#524), identical to
-                                            // scrollThreshold otherwise.
+                                            val rowQuantumMode = gestureCallback.prefersRowHeightScrollQuantum()
+                                            val quantum = if (rowQuantumMode) baseCharHeight else callbackScrollThreshold
                                             accumulatedScrollY += dragAmount.y
-                                            while (kotlin.math.abs(accumulatedScrollY) >= callbackScrollThreshold) {
+                                            while (kotlin.math.abs(accumulatedScrollY) >= quantum) {
                                                 val draggedUp = accumulatedScrollY < 0
-                                                accumulatedScrollY += if (draggedUp) callbackScrollThreshold else -callbackScrollThreshold
+                                                accumulatedScrollY += if (draggedUp) quantum else -quantum
+                                                rowQuantumStepsFired++
                                                 // Natural scrolling: finger down = scroll up (older content)
                                                 val scrollUp = !draggedUp
                                                 val col = (change.position.x / baseCharWidth).toInt()
@@ -2761,6 +2777,24 @@ internal fun TerminalWithAccessibility(
                                             val scrolledLines =
                                                 (newOffset / baseCharHeight).toInt()
                                             screenState.scrollBy(scrolledLines - screenState.scrollbackPosition)
+                                        }
+                                    }
+
+                                    GestureType.HorizontalScroll -> {
+                                        if (gestureCallback != null) {
+                                            val quantum = baseCharHeight
+                                            accumulatedScrollX += dragAmount.x
+                                            while (kotlin.math.abs(accumulatedScrollX) >= quantum) {
+                                                val draggedLeft = accumulatedScrollX < 0
+                                                accumulatedScrollX += if (draggedLeft) quantum else -quantum
+                                                rowQuantumStepsFired++
+                                                val scrollLeft = !draggedLeft
+                                                val col = (change.position.x / baseCharWidth).toInt()
+                                                    .coerceIn(0, screenState.snapshot.cols - 1)
+                                                val row = ((change.position.y + keyboardCoveredPx) / baseCharHeight).toInt()
+                                                    .coerceIn(0, screenState.snapshot.rows - 1)
+                                                gestureCallback.onHorizontalScroll(col, row, scrollLeft)
+                                            }
                                         }
                                     }
 
@@ -2813,11 +2847,28 @@ internal fun TerminalWithAccessibility(
                             longPressJob.cancel()
                             callbackLongPressJob?.cancel()
                             edgeAutoScrollJob.cancel()
+                            if (gestureType != GestureType.Undetermined || isHorizontalDrag) {
+                                tapTracker.lastTimestamp = -1L
+                                tapTracker.lastUpTimestamp = -1L
+                            }
                             when (gestureType) {
                                 GestureType.Scroll -> {
                                     // Flush any remaining accumulated scroll that didn't
                                     // reach the threshold — ensures small flicks register.
-                                    if (gestureCallback != null && kotlin.math.abs(accumulatedScrollY) > callbackScrollThreshold / 3f) {
+                                    // In row-height quantum mode, only round up a sub-row
+                                    // flick when zero steps fired during the drag, so
+                                    // multi-row drags never jump an extra row on release.
+                                    val rowQuantumMode =
+                                        gestureCallback?.prefersRowHeightScrollQuantum() == true
+                                    val shouldFlush = gestureCallback != null && (
+                                        if (rowQuantumMode) {
+                                            rowQuantumStepsFired == 0 &&
+                                                kotlin.math.abs(accumulatedScrollY) >= baseCharHeight * 0.5f
+                                        } else {
+                                            kotlin.math.abs(accumulatedScrollY) > callbackScrollThreshold / 3f
+                                        }
+                                        )
+                                    if (gestureCallback != null && shouldFlush) {
                                         val scrollUp = accumulatedScrollY > 0 // natural: positive drag = scroll up
                                         val col = (down.position.x / baseCharWidth).toInt()
                                             .coerceIn(0, screenState.snapshot.cols - 1)
@@ -2861,6 +2912,20 @@ internal fun TerminalWithAccessibility(
                                                 scrollOffset.snapTo(0f)
                                             }
                                         }
+                                    }
+                                }
+
+                                GestureType.HorizontalScroll -> {
+                                    if (gestureCallback != null &&
+                                        rowQuantumStepsFired == 0 &&
+                                        kotlin.math.abs(accumulatedScrollX) >= baseCharHeight * 0.5f
+                                    ) {
+                                        val scrollLeft = accumulatedScrollX > 0
+                                        val col = (down.position.x / baseCharWidth).toInt()
+                                            .coerceIn(0, screenState.snapshot.cols - 1)
+                                        val row = ((down.position.y + keyboardCoveredPx) / baseCharHeight).toInt()
+                                            .coerceIn(0, screenState.snapshot.rows - 1)
+                                        gestureCallback.onHorizontalScroll(col, row, scrollLeft)
                                     }
                                 }
 
@@ -2999,8 +3064,11 @@ internal fun TerminalWithAccessibility(
                                         }
                                     }
                                     // Record tap for double-tap detection
-                                    tapTracker.lastTimestamp = down.uptimeMillis
-                                    tapTracker.lastPosition = down.position
+                                    if (!isHorizontalDrag && !inPinchCooldown && !callbackLongPressFired) {
+                                        tapTracker.lastTimestamp = down.uptimeMillis
+                                        tapTracker.lastUpTimestamp = upUptimeMillis
+                                        tapTracker.lastPosition = down.position
+                                    }
                                 }
 
                                 else -> {}

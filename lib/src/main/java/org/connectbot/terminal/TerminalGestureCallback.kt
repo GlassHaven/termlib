@@ -40,6 +40,22 @@ interface TerminalGestureCallback {
     fun onScroll(col: Int, row: Int, scrollUp: Boolean): Boolean = false
 
     /**
+     * Horizontal scroll at terminal cell during a claimed continuous horizontal
+     * drag (`scrollLeft = true` when the finger dragged right to reveal content
+     * to the left, matching [onScroll]'s natural-scroll sign).
+     */
+    fun onHorizontalScroll(col: Int, row: Int, scrollLeft: Boolean): Boolean = false
+
+    /**
+     * When `true`, single-touch drags quantize to one terminal row height
+     * (`baseCharHeight`) per step on both axes (vertical via [onScroll],
+     * horizontal via [onHorizontalScroll]) with no scroll-on-hold, and
+     * [onSwipeHoldStart] is offered only on a double-touch (tap followed
+     * within double-tap timeout by touch-and-drag).
+     */
+    fun prefersRowHeightScrollQuantum(): Boolean = false
+
+    /**
      * A one-finger swipe has just been classified, offered as a *held*
      * gesture before any [onScroll] quantization (#524). Return `true` to
      * claim it: the host then receives [onSwipeHold] whenever the finger
