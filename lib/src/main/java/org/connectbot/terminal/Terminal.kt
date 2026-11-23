@@ -2316,11 +2316,16 @@ internal fun TerminalWithAccessibility(
                                         .coerceIn(0, screenState.snapshot.rows - 1)
                                     initialSelCol = col
                                     initialSelRow = row
+                                    // With the snapshot, a press inside a multiplexer
+                                    // pane (tmux/zellij/herdr) confines the selection
+                                    // to that pane — see detectPane.
                                     selectionManager.startSelection(
                                         row,
                                         col,
                                         screenState.snapshot.cols,
                                         SelectionMode.CHARACTER,
+                                        screenState.snapshot,
+                                        screenState.scrollbackPosition,
                                     )
                                     hostView.performHapticFeedback(
                                         android.view.HapticFeedbackConstants.LONG_PRESS,
@@ -3628,6 +3633,31 @@ internal fun TerminalWithAccessibility(
                                     // Keep menu open for easy cycling
                                 },
                             )
+                            // Only when the selection started inside a pane: widen it
+                            // to the whole screen, or narrow it back to the pane.
+                            if (selectionManager.detectedPane != null) {
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            stringResource(
+                                                if (selectionManager.selectionRange?.pane != null) {
+                                                    R.string.terminal_selection_whole_screen
+                                                } else {
+                                                    R.string.terminal_selection_this_pane
+                                                },
+                                            ),
+                                        )
+                                    },
+                                    onClick = {
+                                        selectionManager.togglePaneConfinement(
+                                            screenState.snapshot.cols,
+                                            screenState.snapshot,
+                                            screenState.scrollbackPosition,
+                                        )
+                                        overflowMenuExpanded = false
+                                    },
+                                )
+                            }
                         }
                     }
                     if (onPasteRequest != null) {

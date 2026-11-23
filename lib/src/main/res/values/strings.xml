@@ -29,4 +29,8 @@
 
     <!-- Overflow menu item showing the current selection granularity; tapping cycles to the next mode (Character → Word → Line → Character) -->
     <string name="terminal_selection_mode_line">Mode: Line</string>
+    <!-- Overflow menu item shown when the selection is confined to a tmux/zellij/herdr pane; widens it to the whole terminal width -->
+    <string name="terminal_selection_whole_screen">Select Whole Screen</string>
+    <!-- Overflow menu item shown after widening a pane selection; confines it back to the pane it started in -->
+    <string name="terminal_selection_this_pane">Select This Pane Only</string>
 </resources>

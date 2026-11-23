@@ -9,4 +9,6 @@
     <string name="terminal_selection_mode_character">模式：字元</string>
     <string name="terminal_selection_mode_word">模式：詞語</string>
     <string name="terminal_selection_mode_line">模式：行</string>
+    <string name="terminal_selection_whole_screen">選取整個螢幕</string>
+    <string name="terminal_selection_this_pane">只選取目前窗格</string>
 </resources>
