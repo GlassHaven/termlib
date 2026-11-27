@@ -9,4 +9,6 @@
     <string name="terminal_selection_mode_character">모드: 문자</string>
     <string name="terminal_selection_mode_word">모드: 단어</string>
     <string name="terminal_selection_mode_line">모드: 줄</string>
+    <string name="terminal_selection_whole_screen">전체 화면 선택</string>
+    <string name="terminal_selection_this_pane">이 창만 선택</string>
 </resources>

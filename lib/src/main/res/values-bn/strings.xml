@@ -9,4 +9,6 @@
     <string name="terminal_selection_mode_character">মোড: অক্ষর</string>
     <string name="terminal_selection_mode_word">মোড: শব্দ</string>
     <string name="terminal_selection_mode_line">মোড: লাইন</string>
+    <string name="terminal_selection_whole_screen">পুরো স্ক্রিন নির্বাচন করুন</string>
+    <string name="terminal_selection_this_pane">শুধু এই প্যান নির্বাচন করুন</string>
 </resources>
