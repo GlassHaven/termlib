@@ -9,4 +9,6 @@
     <string name="terminal_selection_mode_character">الوضع: حرف</string>
     <string name="terminal_selection_mode_word">الوضع: كلمة</string>
     <string name="terminal_selection_mode_line">الوضع: سطر</string>
+    <string name="terminal_selection_whole_screen">تحديد الشاشة بأكملها</string>
+    <string name="terminal_selection_this_pane">تحديد هذا الجزء فقط</string>
 </resources>

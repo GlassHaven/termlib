@@ -272,15 +272,28 @@ internal class SelectionManager {
     }
 
     /** Keep both anchors inside [SelectionRange.pane], when there is one. */
-    private fun SelectionRange.clampedToPane(): SelectionRange {
+    private fun SelectionRange.clampedToPane(): SelectionRange = clampedStartToPane().clampedEndToPane()
+
+    // Each update path clamps only the anchor it moves. Re-clamping the other
+    // one would undo [shiftSelectionStartByRows]: during a drag with edge
+    // auto-scroll the start anchor legitimately goes above the viewport.
+
+    private fun SelectionRange.clampedStartToPane(): SelectionRange {
         val p = pane ?: return this
-        return copy(
-            startRow = startRow.coerceIn(p.top, p.bottom),
-            startCol = startCol.coerceIn(p.left, p.right),
-            endRow = endRow.coerceIn(p.top, p.bottom),
-            endCol = endCol.coerceIn(p.left, p.right),
-        )
+        return copy(startRow = p.clampRow(startRow), startCol = startCol.coerceIn(p.left, p.right))
     }
+
+    private fun SelectionRange.clampedEndToPane(): SelectionRange {
+        val p = pane ?: return this
+        return copy(endRow = p.clampRow(endRow), endCol = endCol.coerceIn(p.left, p.right))
+    }
+
+    /**
+     * Rows above the viewport are scrollback. When the pane starts at the top
+     * of the screen, those lines scrolled out of it, so they stay selectable;
+     * otherwise rows stop at the pane's top and bottom.
+     */
+    private fun PaneRect.clampRow(row: Int): Int = if (top == 0 && row < 0) row else row.coerceIn(top, bottom)
 
     private fun detectPaneAt(snapshot: TerminalSnapshot, row: Int, col: Int, scrollbackPosition: Int): PaneRect? = detectPane(snapshot.rows, snapshot.cols, row, col) { r, c ->
         getSnapshotLine(snapshot, r, scrollbackPosition)?.cellAtColumn(c)?.char
@@ -290,17 +303,17 @@ internal class SelectionManager {
         if (!isSelecting) return
 
         val range = selectionRange ?: return
-        selectionRange = range.copy(endRow = row, endCol = col).clampedToPane()
+        selectionRange = range.copy(endRow = row, endCol = col).clampedEndToPane()
     }
 
     fun updateSelectionStart(row: Int, col: Int) {
         val range = selectionRange ?: return
-        selectionRange = range.copy(startRow = row, startCol = col).clampedToPane()
+        selectionRange = range.copy(startRow = row, startCol = col).clampedStartToPane()
     }
 
     fun updateSelectionEnd(row: Int, col: Int) {
         val range = selectionRange ?: return
-        selectionRange = range.copy(endRow = row, endCol = col).clampedToPane()
+        selectionRange = range.copy(endRow = row, endCol = col).clampedEndToPane()
     }
 
     fun moveSelectionUp(maxRow: Int) {
@@ -308,7 +321,7 @@ internal class SelectionManager {
         if (isSelecting) {
             // During selection, move the end point up
             val newRow = (range.endRow - 1).coerceAtLeast(0)
-            selectionRange = range.copy(endRow = newRow).clampedToPane()
+            selectionRange = range.copy(endRow = newRow).clampedEndToPane()
         } else {
             // After selection is finished, move both start and end up
             val newStartRow = (range.startRow - 1).coerceAtLeast(0)
@@ -322,7 +335,7 @@ internal class SelectionManager {
         if (isSelecting) {
             // During selection, move the end point down
             val newRow = (range.endRow + 1).coerceAtMost(maxRow - 1)
-            selectionRange = range.copy(endRow = newRow).clampedToPane()
+            selectionRange = range.copy(endRow = newRow).clampedEndToPane()
         } else {
             // After selection is finished, move both start and end down
             val newStartRow = (range.startRow + 1).coerceAtMost(maxRow - 1)
@@ -336,7 +349,7 @@ internal class SelectionManager {
         if (isSelecting) {
             // During selection, move the end point left
             val newCol = (range.endCol - 1).coerceAtLeast(0)
-            selectionRange = range.copy(endCol = newCol).clampedToPane()
+            selectionRange = range.copy(endCol = newCol).clampedEndToPane()
         } else {
             // After selection is finished, move both start and end left
             val newStartCol = (range.startCol - 1).coerceAtLeast(0)
@@ -350,7 +363,7 @@ internal class SelectionManager {
         if (isSelecting) {
             // During selection, move the end point right
             val newCol = (range.endCol + 1).coerceAtMost(maxCol - 1)
-            selectionRange = range.copy(endCol = newCol).clampedToPane()
+            selectionRange = range.copy(endCol = newCol).clampedEndToPane()
         } else {
             // After selection is finished, move both start and end right
             val newStartCol = (range.startCol + 1).coerceAtMost(maxCol - 1)
@@ -508,7 +521,14 @@ internal class SelectionManager {
                     val startLine = getSnapshotLine(snapshot, range.startRow, scrollbackPosition)
                     val endLine = getSnapshotLine(snapshot, range.endRow, scrollbackPosition)
 
-                    if (startLine != null && endLine != null) {
+                    val pane = range.pane
+                    if (startLine != null && endLine != null && pane != null) {
+                        // Pane anchors are screen columns: see findWordBoundariesInPane.
+                        selectionRange = range.copy(
+                            startCol = findWordBoundariesInPane(startLine, range.startCol, pane).first,
+                            endCol = findWordBoundariesInPane(endLine, range.endCol, pane).second,
+                        )
+                    } else if (startLine != null && endLine != null) {
                         val (newStartCol, _) = findWordBoundaries(startLine, range.startCol)
                         val (_, newEndCol) = findWordBoundaries(endLine, range.endCol)
 
@@ -552,8 +572,35 @@ internal class SelectionManager {
 
     private fun isWordChar(char: Char): Boolean = char.isLetterOrDigit() || char == '_'
 
-    private fun findWordBoundaries(line: TerminalLine, col: Int): Pair<Int, Int> {
-        val cells = line.cells
+    private fun findWordBoundaries(line: TerminalLine, col: Int): Pair<Int, Int> = findWordBoundaries(line.cells, col)
+
+    /**
+     * [findWordBoundaries] for a selection confined to [pane]: [column] and the
+     * result are screen columns, not cell indices (a wide glyph is one cell
+     * over two columns), and only the cells starting inside the pane are
+     * searched, so the trailing-whitespace fallback cannot reach a word in the
+     * neighbouring pane or sidebar. The end is the start column of the last
+     * cell, which is how pane ranges address a cell.
+     */
+    private fun findWordBoundariesInPane(line: TerminalLine, column: Int, pane: PaneRect): Pair<Int, Int> {
+        val starts = ArrayList<Int>()
+        val cells = ArrayList<TerminalLine.Cell>()
+        var at = 0
+        for (cell in line.cells) {
+            if (at > pane.right) break
+            if (at >= pane.left) {
+                starts += at
+                cells += cell
+            }
+            at += cell.width
+        }
+        if (cells.isEmpty()) return Pair(column, column)
+        val index = starts.indexOfLast { it <= column }.coerceAtLeast(0)
+        val (start, end) = findWordBoundaries(cells, index)
+        return Pair(starts[start], starts[end])
+    }
+
+    private fun findWordBoundaries(cells: List<TerminalLine.Cell>, col: Int): Pair<Int, Int> {
         if (cells.isEmpty()) return Pair(0, 0)
         val safeCol = col.coerceIn(0, cells.lastIndex)
 

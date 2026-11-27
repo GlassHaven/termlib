@@ -238,4 +238,77 @@ class PaneSelectionTest {
         // Rows 0 and 1 both end at column 13, one short of the pane's last column.
         assertEquals("先做数学x识点、难x多家\nend", sm.getSelectedText(snap))
     }
+
+    @Test
+    fun wordModeWorksInColumnsBesideACjkSidebar() {
+        // On row 1 the sidebar's 慧苗 makes cell indices lag columns by two.
+        val snap = snapshot(
+            " spaces   │ 1   +",
+            " ○ 慧苗   │alpha beta gamma",
+            "          │",
+            "          │",
+        )
+        val sm = SelectionManager()
+        // Press on "beta" (columns 17..20), then cycle to Mode: Word.
+        sm.startSelection(1, 18, snap.cols, SelectionMode.CHARACTER, snap)
+        sm.endSelection()
+        sm.setMode(SelectionMode.WORD, snap.cols, snap)
+
+        val range = sm.selectionRange!!
+        assertEquals(17, range.startCol)
+        assertEquals(20, range.endCol)
+        assertEquals("beta", sm.getSelectedText(snap))
+    }
+
+    @Test
+    fun wordModeOnABlankPaneRowStaysInThePane() {
+        // Nothing to snap to inside the pane: the trailing-whitespace fallback
+        // must not reach "main" in the sidebar.
+        val snap = snapshot(
+            " spaces   │ 1   +",
+            "   main   │",
+            "          │text",
+            "          │",
+        )
+        val sm = SelectionManager()
+        sm.startSelection(1, 15, snap.cols, SelectionMode.CHARACTER, snap)
+        sm.endSelection()
+        sm.setMode(SelectionMode.WORD, snap.cols, snap)
+
+        val range = sm.selectionRange!!
+        assertTrue(range.startCol >= 11)
+        assertTrue(range.endCol >= 11)
+        assertEquals("", sm.getSelectedText(snap))
+    }
+
+    @Test
+    fun edgeAutoScrollKeepsAStartAnchorAboveTheScreen() {
+        val sm = SelectionManager()
+        sm.startSelection(1, 12, herdr.cols, SelectionMode.CHARACTER, herdr)
+        // Two lines scroll into scrollback under the finger, then the drag continues.
+        sm.shiftSelectionStartByRows(-2)
+        sm.updateSelection(3, 15)
+
+        val range = sm.selectionRange!!
+        assertEquals("start anchor kept in scrollback", -1, range.startRow)
+        assertEquals(3, range.endRow)
+    }
+
+    @Test
+    fun aDragBelowALowerPaneStillStopsAtItsTop() {
+        // A pane that does not reach the screen top keeps its rows: no
+        // scrollback above it belongs to it.
+        val snap = snapshot(
+            "side│top pane",
+            "side├" + "─".repeat(25),
+            "side│bottom a",
+            "side│bottom b",
+            "side│bottom c",
+            "side│bottom d",
+        )
+        val sm = SelectionManager()
+        sm.startSelection(3, 6, snap.cols, SelectionMode.CHARACTER, snap)
+        sm.updateSelection(0, 6)
+        assertEquals(2, sm.selectionRange!!.endRow)
+    }
 }

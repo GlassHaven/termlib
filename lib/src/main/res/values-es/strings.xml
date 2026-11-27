@@ -9,4 +9,6 @@
     <string name="terminal_selection_mode_character">Modo: Carácter</string>
     <string name="terminal_selection_mode_word">Modo: Palabra</string>
     <string name="terminal_selection_mode_line">Modo: Línea</string>
+    <string name="terminal_selection_whole_screen">Seleccionar toda la pantalla</string>
+    <string name="terminal_selection_this_pane">Seleccionar solo este panel</string>
 </resources>

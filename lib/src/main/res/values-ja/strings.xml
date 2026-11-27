@@ -9,4 +9,6 @@
     <string name="terminal_selection_mode_character">モード: 文字</string>
     <string name="terminal_selection_mode_word">モード: 単語</string>
     <string name="terminal_selection_mode_line">モード: 行</string>
+    <string name="terminal_selection_whole_screen">画面全体を選択</string>
+    <string name="terminal_selection_this_pane">このペインのみ選択</string>
 </resources>

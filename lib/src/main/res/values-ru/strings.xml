@@ -9,4 +9,6 @@
     <string name="terminal_selection_mode_character">Режим: символ</string>
     <string name="terminal_selection_mode_word">Режим: слово</string>
     <string name="terminal_selection_mode_line">Режим: строка</string>
+    <string name="terminal_selection_whole_screen">Выбрать весь экран</string>
+    <string name="terminal_selection_this_pane">Выбрать только эту панель</string>
 </resources>
